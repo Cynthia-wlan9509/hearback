@@ -134,12 +134,13 @@ class Queue:
         """Refuse to upload Hearback's own files (ledger, queue, downloaded attachments, token, config)."""
         shielded = [self.root, *self.protected] + ([self.ledger.dir] if self.ledger else [])
         for p in paths:
-            real = Path(p).resolve()
-            for guard in shielded:
-                g = guard.resolve()
-                if real == g or g in real.parents:
-                    raise QueueError("attachment %s is inside Hearback's own files (%s): refusing to upload it"
-                                     % (Path(p).name, g.name or str(g)))
+            # lexical (POSIX can't walk `missing/..`) and symlink-resolved forms both count
+            for real in {Path(os.path.abspath(p)), Path(p).resolve()}:
+                for guard in shielded:
+                    g = guard.resolve()
+                    if real == g or g in real.parents:
+                        raise QueueError("attachment %s is inside Hearback's own files (%s): refusing to upload it"
+                                         % (Path(p).name, g.name or str(g)))
 
     # ------------------------------------------------------------ storage
     def _path(self, state: str, pid: str) -> Path:
@@ -244,6 +245,8 @@ class Queue:
         if self.ledger and thread and kind != "newpost":
             thread = self.ledger.resolve(thread, must_exist=kind in ("reply", "tags", "pin"))
             self.ledger.check_claim(thread, actor, force)
+        if not trusted_attachments:
+            self._check_attachments(attachments)   # before touching the files at all
         atts = [str(Path(a["path"]).resolve()) for a in load_attachments(attachments)]
         if not trusted_attachments:
             self._check_attachments(atts)
