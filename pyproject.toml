@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hearback-desk"
+dynamic = ["version"]
+description = "An agent-native, human-approved bug desk for Discord forum channels."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Cynthia-wlan9509 and contributors" }]
+keywords = ["discord", "bug-tracker", "forum", "agents", "mcp"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Bug Tracking",
+]
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.19,<3"]
+images = ["pillow"]
+dev = ["pytest"]
+
+[project.scripts]
+hearback = "hearback.cli:main"
+
+[tool.setuptools]
+packages = ["hearback"]
+
+[tool.setuptools.dynamic]
+version = { attr = "hearback.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

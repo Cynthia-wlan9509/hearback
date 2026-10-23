@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hearback": {
+      "command": "hearback",
+      "args": ["mcp"],
+      "env": {
+        "HEARBACK_ACTOR": "agent:claude"
+      }
+    }
+  }
+}

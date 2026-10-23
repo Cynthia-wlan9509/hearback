@@ -1,0 +1,3 @@
+# LF everywhere, also on Windows checkouts (the tests assert LF line endings)
+* text=auto eol=lf
+*.png binary

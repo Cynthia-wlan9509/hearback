@@ -1,0 +1,6 @@
+# Add to ~/.codex/config.toml. Run Codex from the folder that holds hearback.toml,
+# or add args = ["--config", "/path/to/hearback.toml", "mcp"].
+[mcp_servers.hearback]
+command = "hearback"
+args = ["mcp"]
+env = { HEARBACK_ACTOR = "agent:codex" }
