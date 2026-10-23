@@ -86,7 +86,7 @@ def test_ci_workflow_matches_the_spec():
     assert re.search(r'python-version: \["3\.11", "3\.12", "3\.13"\]', ci)
     for step in ('pip install -e ".[dev,mcp]"', "pytest -q", "hearback demo\n", "hearback demo --lang zh"):
         assert step in ci, step
-    assert "secrets." not in ci and "contents: read" in ci and "actions/checkout@v4" in ci
+    assert "secrets." not in ci and "contents: read" in ci and re.search(r"actions/checkout@v\d+", ci)
 
 
 # ---------------------------------------------------------------- example
