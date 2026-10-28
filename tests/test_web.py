@@ -202,7 +202,7 @@ def test_the_approvals_page_edits_pending_text_and_the_metrics_grid_has_no_lone_
     static = Path(web.STATIC_DIR)
     js = (static / "app.js").read_text(encoding="utf-8")
     assert 'api("PUT", "/api/queue/" + p.id + "/text", { text: ta.value })' in js
-    assert 'TEXT_KINDS.includes(p.kind)' in js and 't("common.edit")' in js and 'if (bar) showButtons();' in js   # pending only
+    assert 'TEXT_KINDS.includes(p.kind)' in js and 't("common.edit")' in js and 'if (bar && !isFailed) showButtons();' in js   # pending only
     css = (static / "app.css").read_text(encoding="utf-8")
     assert "grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))" in css
     assert "@media (max-width: 1265px) { .metrics:has(> :nth-child(6))" in css
@@ -346,6 +346,26 @@ def test_a_pending_proposal_can_be_reworded_through_the_api(web_env):
     w.ok("POST", "/api/queue/send")
     sent = [c for c in e.fake.writes() if c.path == "/channels/%s/messages" % ch]
     assert [c.body["content"] for c in sent] == ["Better wording"]                       # the edited text is what goes out
+
+
+def test_a_failed_send_is_listed_and_can_be_retried_or_dropped(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("general")
+    p1 = e.queue.propose("post", actor="agent:swlink", thread=ch, text="One", why="x")
+    p2 = e.queue.propose("post", actor="agent:swlink", thread=ch, text="Two", why="x")
+    for p in (p1, p2):
+        w.ok("POST", "/api/queue/%s/approve" % p.id)
+    e.fake.fail_next(r"POST /channels/%s/messages" % ch, 403, {"message": "Missing Permissions", "code": 50013}, times=2)
+    rep = w.ok("POST", "/api/queue/send")
+    assert sorted(f["id"] for f in rep["failed"]) == sorted([p1.id, p2.id])
+    failed = w.ok("GET", "/api/queue?state=failed")["items"]
+    assert len(failed) == 2 and "Missing Permissions" in failed[0]["error"]
+    assert w.ok("POST", "/api/queue/%s/retry" % p1.id)["state"] == "approved"
+    assert w.ok("POST", "/api/queue/%s/reject" % p2.id)["state"] == "rejected"
+    assert w.call("POST", "/api/queue/%s/retry" % p2.id, {}).status == 400                # only failed ones
+    assert w.call("POST", "/api/queue/%s/retry" % p1.id, {}, key=None).status == 403
+    assert w.ok("POST", "/api/queue/send")["sent"] == [p1.id]
+    assert ("human:web", "retry") in {(x["actor"], x["action"]) for x in e.ledger.read_events()}
 
 
 def test_a_negative_content_length_is_refused_instead_of_waited_on(web_env):

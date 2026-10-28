@@ -253,6 +253,7 @@ class App:
         add("POST", "/api/queue/([\\w-]+)/approve", self.api_queue_approve)
         add("POST", "/api/queue/([\\w-]+)/reject", self.api_queue_reject)
         add("PUT", "/api/queue/([\\w-]+)/text", self.api_queue_text)
+        add("POST", "/api/queue/([\\w-]+)/retry", self.api_queue_retry)
         add("GET", "/api/llm", self.api_llm_get)
         add("POST", "/api/llm", self.api_llm_create)
         add("GET", "/api/llm/presets", lambda q: (200, {"items": PRESETS}))
@@ -449,6 +450,10 @@ class App:
 
     def api_queue_reject(self, q: Request) -> tuple[int, Any]:
         return 200, self._proposal(self.queue.reject([q.groups[0]], ACTOR, str(q.body.get("reason") or ""))[0])
+
+    def api_queue_retry(self, q: Request) -> tuple[int, Any]:
+        """Put a failed proposal back to approved. One that may be half posted is refused (check Discord, use the CLI)."""
+        return 200, self._proposal(self.queue.retry(q.groups[0], ACTOR))
 
     def api_queue_text(self, q: Request) -> tuple[int, Any]:
         """Edit the wording of a pending proposal (the queue refuses any other state)."""
@@ -678,12 +683,14 @@ class App:
         channel, message = q.groups
         msg = self._own_message(channel, message)
         new = editor.save_message(self.client(), self.ledger, channel, msg, str(q.body.get("text") or ""), ACTOR)
+        self.inbox.revise(channel, message, new.get("content", ""))     # later replies see the corrected text
         return 200, {"id": message, "content": new.get("content", "")}
 
     def api_botmsg_delete(self, q: Request) -> tuple[int, Any]:
         channel, message = q.groups
         msg = self._own_message(channel, message)
         editor.remove_message(self.client(), self.ledger, channel, msg, ACTOR)
+        self.inbox.revise(channel, message, None)                        # and no longer build on a deleted reply
         return 200, {"deleted": message}
 
     # ---- supporters (Afdian orders -> a Discord role)

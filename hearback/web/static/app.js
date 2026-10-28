@@ -382,12 +382,17 @@ async function pageConversations() {
 
 /* ---------- approvals ---------- */
 async function pageApprovals() {
-  const [pend, appr] = await Promise.all([api("GET", "/api/queue?state=pending"), api("GET", "/api/queue?state=approved")]);
+  const [pend, appr, failed] = await Promise.all([api("GET", "/api/queue?state=pending"), api("GET", "/api/queue?state=approved"),
+    api("GET", "/api/queue?state=failed")]);
   const wrap = h("div", null);
   const TEXT_KINDS = ["reply", "post", "newpost", "edit"];       // the proposals that carry wording a person can fix
-  const card = (p, approved) => {
+  const card = (p, approved, isFailed) => {
     const view = h("div", null);
     const bar = approved ? null : h("div", { class: "card-actions" });
+    if (isFailed) {
+      bar.appendChild(h("button", { class: "btn primary small", onclick: () => decide(p, "retry") }, t("appr.retry")));
+      bar.appendChild(h("button", { class: "btn danger small", onclick: () => decide(p, "reject") }, t("appr.drop")));
+    }
     const showText = () => clear(view).appendChild(p.kind === "tags"
       ? h("div", { class: "preview" }, [p.add.length ? "+ " + p.add.join(", ") : "", p.remove.length ? "− " + p.remove.join(", ") : ""].filter(Boolean).join("   "))
       : h("div", { class: "preview" }, p.text));
@@ -408,11 +413,12 @@ async function pageApprovals() {
       bar.appendChild(h("button", { class: "btn small", onclick: () => { showText(); showButtons(); } }, t("common.cancel")));
     }
     showText();
-    if (bar) showButtons();
+    if (bar && !isFailed) showButtons();
     return h("div", { class: "card" },
       h("div", { class: "row" }, h("span", { class: "badge" }, p.kind), h("strong", { class: "grow" }, p.target || p.thread || p.title),
         h("span", { class: "muted small-text" }, fmtTime(p.created))),
       view,
+      isFailed && p.error ? h("div", { class: "err-line small-text" }, t("appr.error") + ": " + p.error) : null,
       p.why ? h("div", { class: "sub small-text" }, t("appr.why") + ": " + p.why) : null,
       h("div", { class: "sub small-text" }, t("appr.by") + ": " + p.actor),
       bar);
@@ -431,11 +437,15 @@ async function pageApprovals() {
       renderPage();
     } catch (e) { fail(e); }
   }
-  if (!pend.items.length && !appr.items.length) return empty(t("appr.empty.title"), t("appr.empty.text"), goBtn("conversations", t("appr.goChat")));
+  if (!pend.items.length && !appr.items.length && !failed.items.length) return empty(t("appr.empty.title"), t("appr.empty.text"), goBtn("conversations", t("appr.goChat")));
   wrap.appendChild(h("div", { class: "row end" }, h("button", { class: "btn primary", disabled: !appr.items.length, onclick: sendAll }, t("appr.send") + " (" + appr.items.length + ")")));
   wrap.appendChild(h("h2", null, t("appr.pending") + " (" + pend.items.length + ")"));
   pend.items.forEach((p) => wrap.appendChild(card(p, false)));
   if (appr.items.length) { wrap.appendChild(h("h2", null, t("appr.approved"))); appr.items.forEach((p) => wrap.appendChild(card(p, true))); }
+  if (failed.items.length) {
+    wrap.appendChild(h("h2", null, t("appr.failedHead") + " (" + failed.items.length + ")"));
+    failed.items.forEach((p) => wrap.appendChild(card(p, false, true)));
+  }
   return wrap;
 }
 

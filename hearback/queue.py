@@ -307,8 +307,9 @@ class Queue:
             if p.state == "rejected":
                 out.append(p)
                 continue
-            if p.state not in ("pending", "approved"):
-                raise QueueError("%s is %s; only pending or approved proposals can be rejected" % (p.id, p.state))
+            if p.state not in ("pending", "approved", "failed"):
+                raise QueueError("%s is %s; only pending, approved or failed proposals can be rejected"
+                                 % (p.id, p.state))
             self._move(p, "rejected", rejected_by=actor, rejected_at=now_iso(), reject_reason=reason)
             self._log(actor, "reject", p.thread, {"id": p.id, "reason": reason})
             out.append(p)

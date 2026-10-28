@@ -257,7 +257,7 @@ def test_sending_state_is_visible_and_cannot_be_rejected_or_approved(seeded):
     (e.cfg.queue_dir / "sending").mkdir(exist_ok=True)
     os.replace(e.cfg.queue_dir / "approved" / (p.id + ".json"), e.cfg.queue_dir / "sending" / (p.id + ".json"))
     assert [x.id for x in e.queue.list("sending")] == [p.id] and "sending" in e.queue.render(e.queue.get(p.id))
-    with pytest.raises(QueueError, match="only pending or approved"):
+    with pytest.raises(QueueError, match="only pending, approved or failed"):
         e.queue.reject([p.id], "human:test")
     with pytest.raises(QueueError, match="only pending"):
         e.queue.approve([p.id], "human:test")
@@ -303,7 +303,7 @@ def test_reject_after_the_claim_is_refused_instead_of_silently_ignored(seeded, m
 
     monkeypatch.setattr(actions, "execute", reject_mid_send)
     e.queue.send(e.client, e.ledger, delay=0, sleep=lambda s: None, verify=False)
-    assert "only pending or approved" in outcome["error"]            # it is 'sending', and the human is told
+    assert "only pending, approved or failed" in outcome["error"]            # it is 'sending', and the human is told
     assert e.queue.get(p.id).state == "sent"
 
 
