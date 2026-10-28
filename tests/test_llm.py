@@ -289,3 +289,55 @@ def test_scrub_removes_registered_and_key_shaped_text():
     assert "abcdef12345" not in out
     assert scrub("plain text, max_tokens too big") == "plain text, max_tokens too big"
     assert llm.scrub_obj({"a": ["sk-abcdefghijk"]}) == {"a": ["***"]}
+
+
+def test_image_blocks_become_each_providers_own_format(monkeypatch):
+    seen = {}
+
+    class AClient:
+        def __init__(self, **kw):
+            self.messages = types.SimpleNamespace(create=self.create)
+
+        def create(self, **kw):
+            seen["anthropic"] = kw["messages"]
+            return types.SimpleNamespace(stop_reason="end_turn", content=[types.SimpleNamespace(type="text", text="a")])
+
+    class OClient:
+        def __init__(self, **kw):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def create(self, **kw):
+            seen["openai"] = kw["messages"]
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="o"))])
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=AClient))
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=OClient))
+    content = [llm.image_block("image/png", "QUJD"), {"type": "text", "text": "what is this"}]
+    msgs = [{"role": "user", "content": content}, {"role": "assistant", "content": "plain text stays a string"}]
+    complete({"id": "a", "protocol": "anthropic", "model": "m"}, "s", msgs, 10, key=KEY)
+    complete({"id": "o", "protocol": "openai", "model": "m"}, "s", msgs, 10, key=KEY)
+    assert seen["anthropic"][0]["content"] == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+        {"type": "text", "text": "what is this"}]
+    assert seen["openai"][1]["content"] == [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        {"type": "text", "text": "what is this"}]
+    assert seen["anthropic"][1]["content"] == seen["openai"][2]["content"] == "plain text stays a string"
+    assert content[0] == {"type": "image", "media_type": "image/png", "data": "QUJD"}      # the caller's blocks are not changed
+
+
+def test_http_status_survives_complete_and_complete_any(store):
+    class Bad(Exception):
+        status_code = 400
+
+    a = add(store)
+    store.set_key(a["id"], "key-a-xxxxxx")
+    store.set_settings({"retries": 0})
+    set_provider_factory("openai", FakeProvider([Bad("no images please")]).factory)
+    with pytest.raises(LLMError) as ei:
+        complete_any(store, "s", [])
+    assert ei.value.status == 400 and "no images please" in str(ei.value)
+    set_provider_factory("openai", FakeProvider([RuntimeError("plain")]).factory)
+    with pytest.raises(LLMError) as ei:
+        complete_any(store, "s", [])
+    assert ei.value.status is None

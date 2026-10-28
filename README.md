@@ -146,6 +146,16 @@ Safety model:
   every outgoing message disables mentions.
 - Recent messages the bot sees are kept in `.hearback/inbox.jsonl` (gitignored, last 5000 lines).
 
+**Bug forum AI review.** Enter the server id and the forum channel id under **Settings** (they are saved into
+`hearback.toml`), press **Sync**, then **AI review**. For each thread that nobody has handled yet (or that got new
+replies) the model writes a suggestion into `triage.ai`: summary, cluster, severity, suggested status, likely cause,
+where to look, what to ask the reporter, and a draft reply. It never changes the fields a person owns. In the thread
+panel you can edit the draft and press **Send to approvals** (replies and tags still go through the approval queue),
+or **Adopt triage** to copy chosen fields into the real triage. **Export fix list** writes a markdown task sheet
+grouped by cluster for a coding agent. The **Bot messages** page lists what the bot itself posted in a thread or
+channel so you can fix a typo or delete a message. Screenshots (up to 3) and error lines from `.txt`/`.log`
+attachments are sent along; Sync downloads those attachments.
+
 ## Safety model
 
 What is enforced, and by what:

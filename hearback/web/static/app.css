@@ -182,3 +182,67 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
 .small-text + label.field { margin-top: 12px; }
 
 .row select { width: auto; }
+
+/* round 2: how-to strip, help button, toolbar, chips, forum threads, bot messages */
+.help { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--sub); cursor: pointer; font-weight: 600; }
+.help:hover { background: var(--soft); color: var(--accent-dark); }
+.howto { background: var(--soft); border: 1px solid var(--soft-active); border-radius: 12px; padding: 12px 16px; margin: 0 0 16px; }
+.howto-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; color: var(--accent-dark); }
+.howto-steps { margin: 0; padding-left: 22px; color: var(--ink); }
+.howto-steps li { margin: 2px 0; }
+.pad { padding: 16px 4px; }
+.gap { height: 10px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+.chip { border: 1px solid var(--line); background: var(--card); border-radius: 99px; padding: 3px 12px; cursor: pointer; color: var(--sub); font-size: 13px; }
+.chip:hover { background: var(--field); }
+.chip.active { background: var(--soft-active); border-color: var(--soft-active); color: var(--accent-dark); font-weight: 600; }
+.review-box progress { width: 100%; height: 10px; margin: 8px 0 4px; accent-color: var(--accent); }
+.err-title { margin-top: 8px; color: var(--error); }
+.err-line { color: var(--error); overflow-wrap: anywhere; }
+.badge.sev-high { background: var(--error-soft); color: var(--error); }
+.badge.sev-medium { background: #F6EBD3; color: #8A6420; }
+.badge.sev-low { background: var(--field); color: var(--sub); border: 1px solid var(--line); }
+.badge.opt { margin-left: 8px; }
+.threads .thread { padding: 0; margin-top: 10px; }
+.thread-head { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 12px 16px; cursor: pointer; border-radius: 12px; }
+.thread-head:hover { background: var(--field); }
+.thread-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.thread-sum { padding: 0 16px 10px 36px; }
+.flag { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--line); flex: none; }
+.flag.on { background: var(--star); border-color: var(--star); }
+.thread-body { border-top: 1px solid var(--line); padding: 14px 16px 16px; }
+.detail { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.detail-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pane { min-width: 0; }
+.pane h3 { font-size: 14px; margin: 12px 0 6px; color: var(--sub); }
+.pane h3:first-child { margin-top: 0; }
+.txt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.who { color: var(--sub); }
+.reply { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; margin: 8px 0; }
+.reply.bot { border-left-color: var(--accent); }
+.ai-sum { font-weight: 600; margin-bottom: 8px; }
+.facts { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; color: var(--sub); }
+.lbl { font-size: 12px; color: var(--sub); margin: 8px 0 2px; }
+.codes { display: flex; gap: 6px; flex-wrap: wrap; }
+.draft { min-height: 130px; }
+.adopt-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.adopt-label { width: 64px; flex: none; color: var(--sub); font-size: 13px; }
+.adopt-row select, .adopt-row input[type=text] { width: 100%; }
+.adopt-row input[type=checkbox] { width: auto; }
+.modal.wide { max-width: 760px; }
+.preview.export { max-height: 55vh; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; }
+.todo .grow { min-width: 0; }
+.legend ul { margin: 0 0 8px; padding-left: 20px; }
+.bm-head { margin: 0 0 8px; }
+.bm + .bm { margin-top: 10px; }
+.bm.focus { border-color: var(--accent); }
+.counter { text-align: right; color: var(--muted); margin-top: 4px; }
+.counter.over { color: var(--error); font-weight: 600; }
+
+@media (max-width: 860px) {
+  .detail, .two { grid-template-columns: 1fr; }
+  .thread-head { flex-wrap: wrap; }
+}

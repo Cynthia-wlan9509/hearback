@@ -21,13 +21,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from hearback import __version__, actions
+from hearback import __version__, actions, editor, review
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               display_name, message_from_rest)
-from hearback.config import Config, load_config
+from hearback.config import Config, load_config, save_discord_ids
 from hearback.discord import DiscordClient
-from hearback.ledger import Ledger
+from hearback.ledger import STATUSES, Ledger
 from hearback.llm import PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub, scrub_obj
 from hearback.queue import Queue
 from hearback.sync import format_delta, sync as run_sync
@@ -48,6 +48,17 @@ INVITE_PERMISSIONS = (1 << 10) | (1 << 11) | (1 << 38) | (1 << 16) | (1 << 15)
 PORTAL_URL = "https://discord.com/developers/applications"
 TEXT_CHANNEL_TYPES = (0, 5)
 SEND_LIMIT = 8000
+REVIEW_LIMIT = 15                 # threads per AI review run unless the page asks for another number
+ADOPT_FIELDS = ("status", "cluster", "root_cause", "fix")
+PROPOSE_WHY = "AI review draft, edited by a human"
+DETAIL_REPLIES = 30
+
+
+def _names(v: Any) -> list[str]:
+    """A list of non-empty strings from a JSON value (a comma-separated string is accepted too)."""
+    if isinstance(v, str):
+        v = v.split(",")
+    return list(dict.fromkeys(str(x).strip() for x in v if str(x).strip())) if isinstance(v, list) else []
 
 
 class ApiError(Exception):
@@ -80,6 +91,7 @@ class App:
         self.agents = AgentStore(cfg.data_dir)
         self.rules = RuleStore(cfg.data_dir)
         self.inbox = Inbox(cfg.data_dir)
+        self.review = review.ReviewRunner(self.ledger, self.agents, self._review_llm, self._model_of)
         self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message)
@@ -118,6 +130,15 @@ class App:
     def _llm_call(self, agent: dict, system: str, messages: list[dict]) -> str:
         return complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)[0]
 
+    def _review_llm(self, system: str, messages: list, max_tokens: int, prefer: str | None) -> tuple[str, str]:
+        return complete_any(self.llm, system, messages, max_tokens, prefer=prefer)
+
+    def _model_of(self, profile_id: str) -> str:
+        try:
+            return str(self.llm.get(profile_id).get("model") or profile_id)
+        except LLMError:
+            return profile_id
+
     def _send_auto(self, channel: str, text: str) -> list[str]:
         return actions.post(self.client(), self.ledger, channel, text)["message_ids"]
 
@@ -151,6 +172,9 @@ class App:
         return res[1], res[2]
 
     def _channel_label(self, channel_id: str) -> str:
+        rec = self.ledger.load()["threads"].get(channel_id)
+        if rec and rec.get("title"):
+            return "Bug forum / %s" % rec["title"]
         if self._dir_cache:
             for g in self._dir_cache[1]:
                 for c in g["channels"]:
@@ -197,9 +221,20 @@ class App:
         add("DELETE", "/api/agents/([\\w-]+)", self.api_agent_delete)
         add("GET", "/api/forum", self.api_forum)
         add("POST", "/api/forum/sync", self.api_forum_sync)
+        add("GET", "/api/forum/review", self.api_review_status)
+        add("POST", "/api/forum/review", self.api_review_start)
+        add("POST", "/api/forum/review/stop", self.api_review_stop)
+        add("POST", "/api/forum/export", self.api_forum_export)
+        add("GET", "/api/forum/(\\d+)", self.api_forum_thread)
+        add("POST", "/api/forum/(\\d+)/adopt", self.api_forum_adopt)
+        add("POST", "/api/forum/(\\d+)/propose", self.api_forum_propose)
+        add("GET", "/api/botmsgs", self.api_botmsgs)
+        add("PUT", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_edit)
+        add("DELETE", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_delete)
         add("GET", "/api/logs", self.api_logs)
         add("GET", "/api/settings", self.api_settings)
         add("PUT", "/api/settings/token", self.api_token)
+        add("PUT", "/api/settings/forum", self.api_settings_forum)
         return r
 
     def dispatch(self, req_method: str, path: str, query: dict[str, str], body: dict) -> tuple[int, Any]:
@@ -227,6 +262,7 @@ class App:
             "version": __version__, "bot": st, "guilds": len(guilds),
             "pending": len(self.queue.list("pending")), "auto_today": self.bot.auto_today(),
             "forum_threads": len(self.ledger.load()["threads"]), "forum_configured": bool(self.cfg.forum_id),
+            "forum_to_review": len(review.pending_threads(self.ledger.load())) if self.cfg.forum_id else 0,
             "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
             "token_set": tok["set"],
             "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
@@ -382,27 +418,183 @@ class App:
         self.agents.delete(q.groups[0])
         return 200, {"deleted": q.groups[0]}
 
-    # ---- forum / logs
+    # ---- forum / AI review
+    def _forum_ready(self) -> None:
+        if not self.cfg.forum_id:
+            raise ApiError(400, "No bug forum is set. Add its channel id in Settings first.")
+
     def api_forum(self, q: Request) -> tuple[int, Any]:
         if not self.cfg.forum_id:
             return 200, {"items": [], "configured": False,
-                         "reason": "No bug forum is configured. Add forum_id to hearback.toml ([discord])."}
+                         "reason": "No bug forum is set. Add the forum channel id in Settings "
+                                   "(or forum_id under [discord] in hearback.toml)."}
         data = self.ledger.load()
         rows = []
         for tid, rec in data["threads"].items():
             tri = rec.get("triage") or {}
             replies = rec.get("replies") or []
-            rows.append({"id": tid, "title": rec.get("title", ""), "status": tri.get("status", "new"),
-                         "cluster": tri.get("cluster", ""), "tags": rec.get("tags", []),
+            rows.append({"id": tid, "title": rec.get("title", ""), "author": rec.get("author", ""),
+                         "status": tri.get("status", "new"), "cluster": tri.get("cluster", ""),
+                         "tags": rec.get("tags", []), "reviewed": tri.get("reviewed", ""),
+                         "needs_review": review.needs_review(rec), "ai": review.ai_summary(rec),
                          "last_activity": (replies[-1].get("time") if replies else rec.get("created", ""))})
         rows.sort(key=lambda r: r["last_activity"] or "", reverse=True)
-        return 200, {"items": rows, "configured": True, "reason": "", "synced_at": data.get("synced_at", "")}
+        active = self.llm.active_public()
+        return 200, {"items": rows, "configured": True, "reason": "", "synced_at": data.get("synced_at", ""),
+                     "to_review": len(review.pending_threads(data)), "review_limit": REVIEW_LIMIT,
+                     "model": active["model"] if active else "", "statuses": [s for s in STATUSES]}
 
     def api_forum_sync(self, q: Request) -> tuple[int, Any]:
         self.cfg.require_forum()
-        delta = run_sync(self.client(), self.ledger, self.cfg, download=False, actor=ACTOR)
+        delta = run_sync(self.client(), self.ledger, self.cfg, download=True, actor=ACTOR)
         return 200, {"summary": scrub(format_delta(delta))}
 
+    def _thread_id(self, ident: str) -> str:
+        self._forum_ready()
+        return self.ledger.resolve(ident)
+
+    def api_forum_thread(self, q: Request) -> tuple[int, Any]:
+        tid = self._thread_id(q.groups[0])
+        data = self.ledger.load()
+        rec = data["threads"][tid]
+        tri = rec.get("triage") or {}
+        posted = {str(p.get("message_id")) for p in tri.get("replies_posted") or []}
+        replies = rec.get("replies") or []
+        guild = str(data.get("guild_id") or self.cfg.guild_id or "")
+        return 200, {
+            "id": tid, "title": rec.get("title", ""), "author": rec.get("author", ""), "created": rec.get("created", ""),
+            "tags": rec.get("tags", []), "body": str(rec.get("body") or "")[:8000],
+            "attachments": [os.path.basename(str(a)) for a in rec.get("attachments") or []],
+            "reply_count": len(replies),
+            "replies": [{"id": r.get("id"), "author": r.get("author", ""), "time": r.get("time", ""),
+                         "content": str(r.get("content") or "")[:4000], "bot": bool(r.get("bot")) or str(r.get("id")) in posted,
+                         "attachments": [os.path.basename(str(a)) for a in r.get("attachments") or []]}
+                        for r in replies[-DETAIL_REPLIES:]],
+            "triage": {k: tri.get(k, "") for k in ("status", "cluster", "root_cause", "fix", "reviewed", "reviewed_by")},
+            "ai": tri.get("ai") if isinstance(tri.get("ai"), dict) else None,
+            "needs_review": review.needs_review(rec), "forum_tags": list((data.get("tags") or {}).values()),
+            "link": "https://discord.com/channels/%s/%s" % (guild, tid) if guild else ""}
+
+    def api_review_status(self, q: Request) -> tuple[int, Any]:
+        st = self.review.status()
+        st["to_review"] = len(review.pending_threads(self.ledger.load()))
+        return 200, st
+
+    def api_review_start(self, q: Request) -> tuple[int, Any]:
+        self._forum_ready()
+        try:
+            limit = max(1, min(int(q.body.get("limit") or REVIEW_LIMIT), 100))
+        except (TypeError, ValueError):
+            raise ApiError(400, "limit must be a number") from None
+        agent_id = str(q.body.get("agent") or "") or None
+        agent = self.agents.get_or_auto(agent_id or review.DEFAULT_AGENT)
+        if not self.llm.candidates(agent.get("profile_id") or None):
+            raise ApiError(400, "No model is set up yet. Add one on the Models page first.")
+        ids = review.pending_threads(self.ledger.load(), limit)
+        try:
+            job = self.review.start(ids, agent["id"])
+        except review.ReviewBusy as e:
+            raise ApiError(409, str(e)) from None
+        self.ledger.event(ACTOR, "ai_review_start", None, {"threads": len(ids), "agent": agent["id"]})
+        return 200, {"job": job, "total": len(ids)}
+
+    def api_review_stop(self, q: Request) -> tuple[int, Any]:
+        self.ledger.event(ACTOR, "ai_review_stop", None, None)
+        return 200, self.review.stop()
+
+    def api_forum_adopt(self, q: Request) -> tuple[int, Any]:
+        tid = self._thread_id(q.groups[0])
+        fields = q.body.get("fields")
+        if not isinstance(fields, dict):
+            raise ApiError(400, "fields must be an object, e.g. {\"status\": \"investigating\"}")
+        patch: dict[str, str] = {}
+        for k, v in fields.items():
+            if k not in ADOPT_FIELDS:
+                raise ApiError(400, "cannot adopt %r; choose from: %s" % (k, ", ".join(ADOPT_FIELDS)))
+            if str(v or "").strip():
+                patch[k] = str(v).strip()[:2000]
+        if not patch:
+            raise ApiError(400, "choose at least one field with a value")
+        tri = self.ledger.update_triage(tid, patch, actor=ACTOR)
+        return 200, {"triage": {k: tri.get(k, "") for k in ("status", "cluster", "root_cause", "fix", "reviewed")},
+                     "needs_review": review.needs_review(self.ledger.load()["threads"][tid])}
+
+    def api_forum_propose(self, q: Request) -> tuple[int, Any]:
+        tid = self._thread_id(q.groups[0])
+        text = str(q.body.get("text") or "").strip()
+        add, remove = _names(q.body.get("add")), _names(q.body.get("remove"))
+        if not text and not add and not remove:
+            raise ApiError(400, "write a reply or pick a tag first")
+        known = {t.lower(): t for t in (self.ledger.load().get("tags") or {}).values()}
+        if known:
+            bad = [n for n in add + remove if n.lower() not in known]
+            if bad:
+                raise ApiError(400, "no forum tag named %s. Available: %s" % (", ".join(map(repr, bad)),
+                                                                              ", ".join(known.values())))
+            add, remove = [known[n.lower()] for n in add], [known[n.lower()] for n in remove]
+        made: list[str] = []
+        error = ""
+        if text:
+            made.append(self.queue.propose("reply", actor=ACTOR, thread=tid, text=text, why=PROPOSE_WHY).id)
+        if add or remove:
+            try:
+                made.append(self.queue.propose("tags", actor=ACTOR, thread=tid, add=add, remove=remove,
+                                               why=PROPOSE_WHY).id)
+            except HearbackError as e:
+                if not made:
+                    raise
+                error = scrub(str(e))[:300]
+        return 200, {"proposals": made, "error": error}
+
+    def api_forum_export(self, q: Request) -> tuple[int, Any]:
+        ids = [str(i) for i in q.body["ids"]] if isinstance(q.body.get("ids"), list) else None
+        path, md, n = review.export_fix_list(self.ledger, ids)
+        self.ledger.event(ACTOR, "export_fix_list", None, {"threads": n, "file": path.name})
+        return 200, {"path": str(path), "filename": path.name, "markdown": md, "count": n}
+
+    # ---- bot messages (edit or delete what the bot itself posted)
+    def _place_label(self, channel: str) -> str:
+        rec = self.ledger.load()["threads"].get(channel)
+        if rec:
+            return str(rec.get("title") or channel)
+        label = self._channel_label(channel)
+        if label != channel:
+            return label
+        try:
+            return "#" + str(self.client().request("GET", "/channels/%s" % channel).get("name") or channel)
+        except (ApiError, HearbackError):
+            return channel
+
+    def api_botmsgs(self, q: Request) -> tuple[int, Any]:
+        channel, focus = editor.parse_target(q.query.get("channel"))
+        if not channel:
+            raise ApiError(400, "pick a place, or paste a Discord channel or message link")
+        msgs = actions.list_bot_messages(self.client(), channel, self.bot_id(), 100)
+        items = [{"id": str(m["id"]), "content": m.get("content") or "", "time": m.get("timestamp") or "",
+                  "edited": bool(m.get("edited_timestamp")),
+                  "attachments": [str(a.get("filename") or "") for a in m.get("attachments") or []]} for m in msgs]
+        return 200, {"channel": channel, "label": self._place_label(channel), "focus": focus or "", "items": items}
+
+    def _own_message(self, channel: str, message: str) -> dict:
+        """The message, only if the bot wrote it (the delete button must never reach other people's messages)."""
+        msg = self.client().request("GET", "/channels/%s/messages/%s" % (channel, message))
+        if str((msg.get("author") or {}).get("id", "")) != self.bot_id():
+            raise ApiError(400, "that message was not written by the bot")
+        return msg
+
+    def api_botmsg_edit(self, q: Request) -> tuple[int, Any]:
+        channel, message = q.groups
+        msg = self._own_message(channel, message)
+        new = editor.save_message(self.client(), self.ledger, channel, msg, str(q.body.get("text") or ""), ACTOR)
+        return 200, {"id": message, "content": new.get("content", "")}
+
+    def api_botmsg_delete(self, q: Request) -> tuple[int, Any]:
+        channel, message = q.groups
+        msg = self._own_message(channel, message)
+        editor.remove_message(self.client(), self.ledger, channel, msg, ACTOR)
+        return 200, {"deleted": message}
+
+    # ---- logs
     def api_logs(self, q: Request) -> tuple[int, Any]:
         try:
             limit = max(1, min(int(q.query.get("limit", "200")), 1000))
@@ -424,7 +616,18 @@ class App:
             invite = ("https://discord.com/oauth2/authorize?client_id=%s&scope=bot&permissions=%d"
                       % (urllib.parse.quote(bot_id), INVITE_PERMISSIONS))
         return 200, {"token": self.token_state(), "port": self.port, "bot_id": bot_id, "invite_url": invite,
-                     "portal_url": PORTAL_URL, "hourly_cap": self.cfg.swlink_hourly_cap, "version": __version__}
+                     "portal_url": PORTAL_URL, "hourly_cap": self.cfg.swlink_hourly_cap, "version": __version__,
+                     "guild_id": self.cfg.guild_id, "forum_id": self.cfg.forum_id}
+
+    def api_settings_forum(self, q: Request) -> tuple[int, Any]:
+        ids = {k: str(q.body.get(k) or "").strip() for k in ("guild_id", "forum_id") if k in q.body}
+        if not ids:
+            raise ApiError(400, "send guild_id and/or forum_id")
+        path = save_discord_ids(self.cfg, **ids)
+        if path not in self.queue.protected:
+            self.queue.protected.append(path)        # a config file created just now is protected like the others
+        self.ledger.event(ACTOR, "forum_update", None, None)
+        return 200, {"guild_id": self.cfg.guild_id, "forum_id": self.cfg.forum_id}
 
     def api_token(self, q: Request) -> tuple[int, Any]:
         tok = str(q.body.get("token") or "").strip()

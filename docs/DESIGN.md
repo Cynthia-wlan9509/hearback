@@ -226,6 +226,20 @@ the agent-facing MCP surface changes.
 - **Console security**: loopback bind, per-run secret in the launch link (kept in sessionStorage, removed from the
   address bar), Host and Origin checks, JSON-only writes, static files only from the package, a strict CSP, no
   `innerHTML`. The bot token and API keys are write-only through the API.
+- **AI review of the bug forum** (`review.py`): `needs_review` picks threads nobody has triaged, threads with human
+  replies newer than the review, and threads whose `triage.ai` is older than the newest human activity (guides never;
+  the bot's own replies never count). The prompt is the chosen agent's system prompt plus a fixed JSON output
+  contract; thread text, replies, other thread titles and log excerpts are fenced as `UNTRUSTED FORUM TEXT`, capped,
+  and up to three pictures are attached when the model takes them (a 400 with pictures is retried once without them).
+  Invalid JSON is retried once. The answer is stored only as `triage.ai` (+ `at`, `model`, `profile`) under the ledger
+  lock by `agent:swlink`; `status`, `cluster`, `root_cause`, `fix` and `reviewed` stay human. The console runs one job at
+  a time in a background thread (progress, stop), lets a person adopt chosen fields (`ledger.update_triage`, actor
+  `human:web`), turns an edited draft into ordinary approval-queue proposals, and exports a markdown fix list grouped by
+  cluster under `.hearback/exports/`. The forum and server ids are entered in Settings and written into
+  `hearback.toml` (other keys and comments kept).
+- **Bot messages**: list, edit and delete what the bot itself posted in a thread or channel (the same human-only
+  direct writes as the desktop editor; the server checks the author before touching a message and keeps
+  `triage.replies_posted` in step).
 - Without discord.py the console still works over REST (read channels, human send, AI draft, approvals); only the live
   gateway needs the `bot` extra. Without the forum configured, chat features need just the token.
 

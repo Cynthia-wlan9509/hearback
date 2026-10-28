@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from hearback.util import HearbackError, ensure_data_dir
+from hearback.util import HearbackError, atomic_write_text, ensure_data_dir
 
 CONFIG_NAME = "hearback.toml"
 DATA_DIR = ".hearback"
@@ -224,3 +225,60 @@ def write_template(directory: str | os.PathLike[str], force: bool = False) -> Pa
     f.write_text(TEMPLATE, encoding="utf-8", newline="\n")
     ensure_data_dir(d / DATA_DIR)   # self-ignoring: token + ledger stay out of git
     return f
+
+
+
+# ---------------------------------------------------------------- saving ids from the web console
+
+SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
+_HEADER_RE = re.compile(r"^\s*\[")
+
+
+def _set_toml_string(text: str, section: str, key: str, value: str) -> str:
+    """Set `key = "value"` inside `[section]`, keeping every other line, comment and the key's own trailing comment."""
+    lines = text.split("\n")
+    head = re.compile(r"^\s*\[\s*%s\s*\]\s*(#.*)?$" % re.escape(section))
+    start = next((i for i, ln in enumerate(lines) if head.match(ln)), None)
+    if start is None:
+        return text.rstrip("\n") + '\n\n[%s]\n%s = "%s"\n' % (section, key, value)
+    end = next((i for i in range(start + 1, len(lines)) if _HEADER_RE.match(lines[i])), len(lines))
+    pat = re.compile(r"^(\s*%s\s*=\s*)(\"[^\"]*\"|'[^']*'|[^#\s]*)(\s*)(#.*)?$" % re.escape(key))
+    for i in range(start + 1, end):
+        m = pat.match(lines[i])
+        if m:
+            lines[i] = '%s"%s"%s%s' % (m.group(1), value, m.group(3) if m.group(4) else "", m.group(4) or "")
+            return "\n".join(lines)
+    lines.insert(start + 1, '%s = "%s"' % (key, value))
+    return "\n".join(lines)
+
+
+def save_discord_ids(cfg: Config, *, guild_id: str | None = None, forum_id: str | None = None) -> Path:
+    """Write [discord] guild_id / forum_id into hearback.toml and update `cfg` in place.
+
+    The file is created from the template when it does not exist; every other key and comment is kept.
+    An empty string clears a value; None leaves it alone. Ids must be Discord snowflakes (17 to 20 digits).
+    """
+    new: dict[str, str] = {}
+    for key, val in (("guild_id", guild_id), ("forum_id", forum_id)):
+        if val is None:
+            continue
+        val = str(val).strip()
+        if val and not SNOWFLAKE_RE.match(val):
+            raise HearbackError("%s must be the long number Discord shows under Copy ID (17 to 20 digits)" % key)
+        new[key] = val
+    path = cfg.path or cfg.root / CONFIG_NAME
+    text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n") if path.is_file() else TEMPLATE
+    for key, val in new.items():
+        text = _set_toml_string(text, "discord", key, val)
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise HearbackError("%s would not be valid TOML after the change (%s); fix it by hand" % (path.name, e)) from None
+    ensure_data_dir(cfg.data_dir)
+    atomic_write_text(path, text)
+    cfg.path = path
+    if "guild_id" in new:
+        cfg.guild_id = new["guild_id"]
+    if "forum_id" in new:
+        cfg.forum_id = new["forum_id"]
+    return path

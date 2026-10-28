@@ -25,7 +25,11 @@ TEST_PROMPT = "Reply with OK."
 
 
 class LLMError(HearbackError):
-    """A model call failed (the message is already scrubbed of keys)."""
+    """A model call failed (the message is already scrubbed of keys). `status` is the HTTP status when known."""
+
+    def __init__(self, message: str = "", status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------- secret scrubbing
@@ -84,10 +88,42 @@ PRESETS: list[dict] = [
 
 # ---------------------------------------------------------------- providers
 
-class Provider:
-    """What a provider object offers: one blocking call."""
+def image_block(media_type: str, data: str) -> dict:
+    """A neutral image block for a message's content list (`data` is base64). Text stays a plain string."""
+    return {"type": "image", "media_type": media_type, "data": data}
 
-    def complete(self, system: str, messages: Sequence[Mapping[str, str]], max_tokens: int) -> str:
+
+def _anthropic_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    out = []
+    for b in content:
+        if b.get("type") == "image":
+            out.append({"type": "image", "source": {"type": "base64", "media_type": b["media_type"],
+                                                    "data": b["data"]}})
+        else:
+            out.append({"type": "text", "text": str(b.get("text", ""))})
+    return out
+
+
+def _openai_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    out = []
+    for b in content:
+        if b.get("type") == "image":
+            out.append({"type": "image_url",
+                        "image_url": {"url": "data:%s;base64,%s" % (b["media_type"], b["data"])}})
+        else:
+            out.append({"type": "text", "text": str(b.get("text", ""))})
+    return out
+
+
+class Provider:
+    """What a provider object offers: one blocking call. A message's content is a string, or a list of
+    {"type": "text", "text"} and image blocks (see image_block) when pictures are sent."""
+
+    def complete(self, system: str, messages: Sequence[Mapping[str, Any]], max_tokens: int) -> str:
         raise NotImplementedError
 
 
@@ -97,9 +133,9 @@ class AnthropicProvider(Provider):
         self.model = profile["model"]
         self.client = anthropic.Anthropic(api_key=key, base_url=profile.get("base_url") or None, timeout=timeout)
 
-    def complete(self, system: str, messages: Sequence[Mapping[str, str]], max_tokens: int) -> str:
-        resp = self.client.messages.create(model=self.model, max_tokens=max_tokens, system=system,
-                                           messages=[dict(m) for m in messages])
+    def complete(self, system: str, messages: Sequence[Mapping[str, Any]], max_tokens: int) -> str:
+        msgs = [{**m, "content": _anthropic_content(m["content"])} for m in messages]
+        resp = self.client.messages.create(model=self.model, max_tokens=max_tokens, system=system, messages=msgs)
         if getattr(resp, "stop_reason", None) == "refusal":
             raise LLMError("model refused")
         return "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text").strip()
@@ -117,8 +153,9 @@ class OpenAIProvider(Provider):
         return getattr(e, "status_code", None) == 400 and "max_tokens" in low and (
             "unsupported" in low or "max_completion_tokens" in low or "not supported" in low)
 
-    def complete(self, system: str, messages: Sequence[Mapping[str, str]], max_tokens: int) -> str:
-        msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
+    def complete(self, system: str, messages: Sequence[Mapping[str, Any]], max_tokens: int) -> str:
+        msgs = [{"role": "system", "content": system}] + [{**m, "content": _openai_content(m["content"])}
+                                                          for m in messages]
         try:
             r = self.client.chat.completions.create(model=self.model, messages=msgs, max_tokens=max_tokens)
         except Exception as e:
@@ -140,18 +177,20 @@ def set_provider_factory(protocol: str, factory: ProviderFactory | None) -> None
     _FACTORIES[protocol] = factory or {"anthropic": AnthropicProvider, "openai": OpenAIProvider}[protocol]
 
 
-def complete(profile: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, str]],
+def complete(profile: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, Any]],
              max_tokens: int | None = None, *, key: str, timeout: float = 60) -> str:
     """One call to one profile. Raises LLMError (scrubbed) on any failure. `key` is the raw API key."""
     try:
         prov = _FACTORIES[profile["protocol"]](profile, key, timeout)
         return prov.complete(system, messages, int(max_tokens or profile.get("max_tokens") or DEFAULT_MAX_TOKENS))
     except LLMError as e:
-        raise LLMError(scrub(e)) from None
+        raise LLMError(scrub(e), e.status) from None
     except ImportError:
         raise LLMError("the %s SDK is not installed: pip install \"hearback-desk[llm]\"" % profile["protocol"]) from None
     except Exception as e:
-        raise LLMError("%s: %s" % (type(e).__name__, scrub(e)[:300])) from None
+        status = getattr(e, "status_code", None)
+        raise LLMError("%s: %s" % (type(e).__name__, scrub(e)[:300]),
+                       status if isinstance(status, int) else None) from None
 
 
 # ---------------------------------------------------------------- the store
@@ -406,7 +445,7 @@ class LLMStore:
             self._state[pid] = {"status": "error" if error else "ok", "error": error}
 
     # ---- calls
-    def call_profile(self, p: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, str]],
+    def call_profile(self, p: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, Any]],
                      max_tokens: int | None = None, timeout: float | None = None) -> str:
         """One attempt against one profile, with counters. Raises LLMError."""
         pid = p["id"]
@@ -446,7 +485,7 @@ class LLMStore:
         return first + rest
 
 
-def complete_any(store: LLMStore, system: str, messages: Sequence[Mapping[str, str]],
+def complete_any(store: LLMStore, system: str, messages: Sequence[Mapping[str, Any]],
                  max_tokens: int | None = None, prefer: str | None = None) -> tuple[str, str]:
     """Answer with the active (or preferred) profile; with fallback on, try the other enabled ones in order.
 
@@ -457,14 +496,16 @@ def complete_any(store: LLMStore, system: str, messages: Sequence[Mapping[str, s
         raise LLMError("no model profile is set up (add one in the LLM page)")
     retries = int(store.load()["retries"])
     errors: list[str] = []
+    statuses: list[int | None] = []
     for p in cands:
         for attempt in range(retries + 1):
             try:
                 return store.call_profile(p, system, messages, max_tokens), p["id"]
             except LLMError as e:
                 errors.append("%s: %s" % (p.get("name", p["id"]), e))
+                statuses.append(e.status)
                 if "refused" in str(e) or str(e).startswith("no API key"):
                     break
                 if attempt < retries:
                     store.sleep(0.5 * (attempt + 1))
-    raise LLMError("; ".join(errors)[:600])
+    raise LLMError("; ".join(errors)[:600], statuses[0] if len(set(statuses)) == 1 else None)

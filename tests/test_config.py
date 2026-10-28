@@ -82,3 +82,46 @@ def test_token_file_may_be_absolute(tmp_path):
     f = tmp_path / "elsewhere.txt"
     f.write_text("abs-token", encoding="utf-8")
     assert Config(root=tmp_path / "x", token_file=str(f)).token({}) == "abs-token"
+
+
+def test_save_discord_ids_edits_in_place_and_keeps_comments(tmp_path):
+    from hearback.config import save_discord_ids
+    f = tmp_path / "hearback.toml"
+    f.write_text('# top\n[status_tags]\nreleased = "Done"\n\n[discord]\n# the ids\nforum_id = ""    # forum\n'
+                 'approvers = ["a"]\n\n[templates]\nlanguage = "zh"\n', encoding="utf-8")
+    cfg = load_config(f)
+    ids = ("1" * 18, "2" * 19)
+    assert save_discord_ids(cfg, guild_id=ids[0], forum_id=ids[1]) == f
+    text = f.read_text(encoding="utf-8")
+    assert text.startswith("# top\n") and "# the ids\n" in text and 'forum_id = "%s"    # forum' % ids[1] in text
+    assert 'guild_id = "%s"' % ids[0] in text and 'approvers = ["a"]' in text and 'language = "zh"' in text
+    again = load_config(f)
+    assert (again.guild_id, again.forum_id, again.language, again.approvers) == (ids[0], ids[1], "zh", ["a"])
+    assert (cfg.guild_id, cfg.forum_id) == ids                                    # the live object follows the file
+    save_discord_ids(cfg, forum_id="")                                            # empty clears, None leaves alone
+    assert (load_config(f).guild_id, load_config(f).forum_id) == (ids[0], "")
+
+
+def test_save_discord_ids_without_a_discord_section_or_file(tmp_path):
+    from hearback.config import save_discord_ids
+    cfg = Config(root=tmp_path)
+    p = save_discord_ids(cfg, forum_id="3" * 18)                                  # no file: made from the template
+    assert p == tmp_path / "hearback.toml" and cfg.path == p and "[variants.free]" in p.read_text(encoding="utf-8")
+    assert (tmp_path / ".hearback" / ".gitignore").exists()
+    bare = tmp_path / "other"
+    bare.mkdir()
+    (bare / "hearback.toml").write_text('[templates]\nlanguage = "en"\n', encoding="utf-8")
+    cfg2 = load_config(bare / "hearback.toml")
+    save_discord_ids(cfg2, forum_id="4" * 18)
+    assert load_config(bare / "hearback.toml").forum_id == "4" * 18
+
+
+def test_save_discord_ids_rejects_non_snowflakes_and_leaves_the_file(tmp_path):
+    from hearback.config import save_discord_ids
+    f = write_template(tmp_path)
+    before = f.read_text(encoding="utf-8")
+    cfg = load_config(f)
+    for bad in ("12345", "abc", "1" * 21, "12 345678901234567"):
+        with pytest.raises(HearbackError, match="Copy ID"):
+            save_discord_ids(cfg, forum_id=bad)
+    assert f.read_text(encoding="utf-8") == before and cfg.forum_id == ""

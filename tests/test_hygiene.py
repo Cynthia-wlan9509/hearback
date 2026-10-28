@@ -101,7 +101,7 @@ def test_core_imports_are_stdlib_only():
 def test_every_spec_module_exists():
     expected = {"__init__", "__main__", "config", "discord", "ledger", "sync", "queue", "actions", "release", "staff",
                 "templates", "guide", "render", "editor", "fake", "demo", "cli", "mcp_server", "util", "llm", "agents",
-                "chatbot", "server"}
+                "chatbot", "server", "review"}
     assert expected <= {f.stem for f in _modules()}
 
 

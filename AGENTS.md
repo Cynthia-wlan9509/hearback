@@ -24,7 +24,7 @@ hearback demo --lang zh
 - `release.py` `staff.py` `guide.py` `templates.py` `render.py` closure, reactions, tutorial, text, dashboard
 - `cli.py` argparse front end; `mcp_server.py` MCP tools; `editor.py` Tk GUI; `demo.py` the scripted demo
 - SWLink (web console + chat bot, DESIGN 3.10): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
-  `agents.py` system-prompt agents; `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
+  `agents.py` system-prompt agents; `review.py` AI review of forum threads (`triage.ai`, fix list, background job); `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
   `web/server.py` loopback JSON API + static page; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
 
 ## Rules
