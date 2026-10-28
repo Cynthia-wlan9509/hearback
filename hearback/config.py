@@ -86,7 +86,7 @@ class Config:
     status_tags: dict[str, str] = field(default_factory=dict)
     variants: dict[str, Variant] = field(default_factory=dict)
     language: str = "en"
-    swlink_hourly_cap: int = 60      # [swlink] hourly_cap: auto replies per hour before drafts are forced
+    swlink_hourly_cap: int = 60      # [swlink] hourly_cap: model calls (replies and drafts) per hour
 
     # ---- paths
     @property

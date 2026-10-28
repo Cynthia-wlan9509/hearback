@@ -21,7 +21,8 @@ from hearback.agents import AUTO_ID, AgentStore
 from hearback.ledger import Ledger
 from hearback.llm import LLMError, register_secret, scrub
 from hearback.queue import Queue, QueueError
-from hearback.util import HearbackError, atomic_write_json, ensure_data_dir, now_iso, read_json, short
+from hearback.util import (HearbackError, atomic_write_json, atomic_write_text, ensure_data_dir, now_iso, read_json,
+                           short)
 
 ACTOR_DRAFT = "agent:swlink"      # proposals made by the bot's own LLM (cannot approve or send)
 ACTOR_BOT = "bot:swlink"          # event log entries for auto replies
@@ -200,8 +201,10 @@ class RuleStore:
 # ---------------------------------------------------------------- the decision
 
 def decide(rule: Mapping[str, Any], msg: Message, bot_id: str, now: float, last_reply_at: float | None,
-           auto_in_last_hour: int = 0, hourly_cap: int = 60) -> str:
-    """ignore | record | draft | auto, for one incoming message under one rule."""
+           calls_in_last_hour: int = 0, hourly_cap: int = 60) -> str:
+    """ignore | record | draft | auto, for one incoming message under one rule.
+
+    Every model call (reply or draft) counts toward the hourly cap; at the cap the message is only recorded."""
     if msg.is_bot or (bot_id and msg.author_id == bot_id):
         return "ignore"
     mode = rule.get("mode", "off")
@@ -211,9 +214,9 @@ def decide(rule: Mapping[str, Any], msg: Message, bot_id: str, now: float, last_
         return "record"
     if last_reply_at is not None and now - last_reply_at < float(rule.get("cooldown_s", 20)):
         return "record"
-    if mode == "auto" and auto_in_last_hour < hourly_cap:
-        return "auto"
-    return "draft"
+    if calls_in_last_hour >= hourly_cap:
+        return "record"
+    return "auto" if mode == "auto" else "draft"
 
 
 # ---------------------------------------------------------------- prompt
@@ -284,7 +287,7 @@ class Inbox:
     def _compact(self) -> None:
         assert self.path is not None
         lines = self.path.read_text(encoding="utf-8", errors="replace").splitlines()[-INBOX_FILE_CAP:]
-        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+        atomic_write_text(self.path, "\n".join(lines) + "\n")
         self._lines = len(lines)
 
     def history(self, channel_id: str, limit: int = HISTORY_LIMIT) -> list[Message]:
@@ -316,15 +319,19 @@ class Chatbot:
         self.rules, self.agents, self.inbox, self.ledger, self.queue = rules, agents, inbox, ledger, queue
         self.llm, self.sender, self.hourly_cap, self.clock = llm, sender, hourly_cap, clock
         self._last_reply: dict[str, float] = {}
-        self._auto_times: collections.deque[float] = collections.deque()
+        self._model_times: collections.deque[float] = collections.deque()      # one stamp per model call
         self._lock = threading.Lock()
 
-    def auto_in_last_hour(self) -> int:
-        now = self.clock()
+    def _calls_in_last_hour(self, now: float) -> int:
+        """Model calls in the last hour. The caller holds the lock."""
+        while self._model_times and now - self._model_times[0] > 3600:
+            self._model_times.popleft()
+        return len(self._model_times)
+
+    def model_calls_in_last_hour(self) -> int:
+        """Model calls (replies and drafts, failed ones too) in the last hour: what the hourly cap counts."""
         with self._lock:
-            while self._auto_times and now - self._auto_times[0] > 3600:
-                self._auto_times.popleft()
-            return len(self._auto_times)
+            return self._calls_in_last_hour(self.clock())
 
     def auto_today(self) -> int:
         """Auto replies logged today (UTC), from the event log."""
@@ -337,8 +344,12 @@ class Chatbot:
         rule = self.rules.rule_for(msg.channel_id, msg.kind == "dm")
         now = self.clock()
         with self._lock:
-            last = self._last_reply.get(msg.channel_id)
-        action = decide(rule, msg, bot_id, now, last, self.auto_in_last_hour(), self.hourly_cap)
+            action = decide(rule, msg, bot_id, now, self._last_reply.get(msg.channel_id),
+                            self._calls_in_last_hour(now), self.hourly_cap)
+            if action in ("draft", "auto"):
+                # reserved before the model call: a model error still counts toward the cap and starts the cooldown
+                self._last_reply[msg.channel_id] = now
+                self._model_times.append(now)
         if action == "ignore":
             return {"action": "ignore"}
         self.inbox.add(msg)
@@ -353,8 +364,6 @@ class Chatbot:
             return {"action": "error", "error": scrub(e)}
         if not text:
             return {"action": "record", "note": "the model returned nothing"}
-        with self._lock:
-            self._last_reply[msg.channel_id] = now
         if action == "draft":
             where = msg.channel_name or msg.channel_id
             try:
@@ -368,8 +377,6 @@ class Chatbot:
         except HearbackError as e:
             self.ledger.event(ACTOR_BOT, "send_error", msg.channel_id, {"error": scrub(e)[:300]})
             return {"action": "error", "error": scrub(e)}
-        with self._lock:
-            self._auto_times.append(now)
         self.ledger.event(ACTOR_BOT, "auto_reply", msg.channel_id, {"to": msg.id, "messages": ids})
         self.inbox.add(Message(id=ids[0] if ids else "reply-" + msg.id, channel_id=msg.channel_id, author_id=bot_id,
                                author_name="SWLink", content=text, ts=now_iso(), guild_id=msg.guild_id, is_bot=True,

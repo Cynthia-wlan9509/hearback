@@ -524,10 +524,13 @@ class FakeAfdian:
         self._seq = 0
 
     def add_order(self, out_trade_no: str | None = None, plan_id: str = "", total_amount: str = "5.00",
-                  status: int = 2, remark: str = "", title: str = "", month: int = 1, **extra: Any) -> dict:
+                  status: int = 2, remark: str = "", title: str = "", month: int = 1, plan_title: str = "",
+                  user_name: str | None = None, **extra: Any) -> dict:
         self._seq += 1
         o = {"out_trade_no": out_trade_no or "20261024%019d" % self._seq, "user_id": "afdian-user-%d" % self._seq,
              "user_private_id": "private-%d" % self._seq, "plan_id": plan_id, "title": title, "month": month,
+             "plan_title": plan_title,
+             "user_name": "Buyer %d" % self._seq if user_name is None else user_name,
              "total_amount": total_amount, "show_amount": total_amount, "status": status, "remark": remark,
              "redeem_id": "", "product_type": 0, "discount": "0.00", "sku_detail": [], **extra}
         self.orders.insert(0, o)                 # newest first, like the real list

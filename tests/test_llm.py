@@ -99,6 +99,28 @@ def test_validation(store):
     assert add(store, "settings")["id"] != "settings"      # reserved route names are never used as ids
 
 
+def test_plain_http_base_urls_are_only_allowed_for_this_computer(store, monkeypatch):
+    for bad in ("http://relay.example/v1", "http://192.168.1.5:8000", "http://localhost.evil.example/v1",
+                "http://localhost@evil.example/v1", "http://127.0.0.1.evil.example", "http://[::2]:80"):
+        with pytest.raises(LLMError, match="use https"):
+            add(store, base_url=bad)
+    assert store.list_public() == []
+    for i, ok in enumerate(("http://localhost:8000/v1", "http://127.0.0.1:11434", "http://[::1]:8080/v1",
+                            "https://relay.example/v1")):
+        assert add(store, name="P%d" % i, base_url=ok)["base_url"] == ok
+    with pytest.raises(LLMError, match="use https"):                    # an edit cannot move a profile onto plain http
+        store.update_profile("p3", {"base_url": "http://relay.example"})
+
+    class Client:                                                       # a profile saved before the rule is refused too
+        def __init__(self, **kw):
+            raise AssertionError("the SDK must not be built for a plain http relay")
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=Client))
+    prof = {"id": "o", "protocol": "openai", "base_url": "http://relay.example/v1", "model": "m"}
+    with pytest.raises(LLMError, match="use https"):
+        complete(prof, "s", [{"role": "user", "content": "x"}], 10, key=KEY)
+
+
 def test_keys_go_to_the_keyring_and_never_into_the_json_file(store):
     p = add(store)
     pub = store.set_key(p["id"], KEY)

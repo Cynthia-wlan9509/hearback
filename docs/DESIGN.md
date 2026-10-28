@@ -213,7 +213,8 @@ the agent-facing MCP surface changes.
 - **Rules** (`.hearback/channels.json`): per channel `{mode: off|draft|auto, agent, trigger: mention|all,
   cooldown_s}`, plus a DM default and a server default. Everything defaults to `off`. `decide()` ignores bots and the
   bot itself, answers in guild channels only when mentioned (or replied to) under `trigger = mention`, honours the
-  cooldown, and turns `auto` into `draft` past an hourly cap (`[swlink] hourly_cap`, default 60).
+  cooldown, and only records once the hourly cap of model calls is reached (`[swlink] hourly_cap`, default 60;
+  drafts and auto replies both count, and the cooldown starts before the model call).
 - **Prompting**: the agent's system prompt plus a security suffix; the last 20 messages and the new one are fenced as
   `UNTRUSTED DISCORD TEXT` with a random id, the same idea as the MCP forum fence. Replies are split with `split_text`
   and sent with `allowed_mentions: {"parse": []}`.
@@ -251,7 +252,7 @@ the agent-facing MCP surface changes.
 - Without discord.py the console still works over REST (read channels, human send, AI draft, approvals); only the live
   gateway needs the `bot` extra. Without the forum configured, chat features need just the token.
 - **Supporters** (`supporters.py`, the Supporters page): Afdian payments to a Discord role. A supporter DMs the bot an
-  Afdian order number (16 to 40 digits found in free text); `Supporters.handle_order` checks it with Afdian's open API
+  Afdian order number (21 to 40 digits found in free text; Discord ids have 17-20); `Supporters.handle_order` checks it with Afdian's open API
   (`https://afdian.com/api/open/`, `ping`, `query-order`, POST JSON `{user_id, params, ts, sign}` with
   `sign = md5(token + "params" + params + "ts" + ts + "user_id" + user_id)`; the token is never sent) and returns an
   `Outcome(reply_key, grant_role_ids, notify_texts)`. Rules in order: a required role first (`require_role_ids`), an
@@ -298,7 +299,7 @@ download = "#supporters channel"
 language = "en"               # en | zh — built-in reply templates
 
 [swlink]
-hourly_cap = 60               # auto replies per hour before the bot drafts instead
+hourly_cap = 60               # model calls per hour (drafts + auto replies); past it messages are only recorded
 ```
 
 ## 5. Non-goals (v0.1)

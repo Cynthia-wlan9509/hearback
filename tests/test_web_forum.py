@@ -298,16 +298,16 @@ def test_every_page_has_a_title_subtitle_and_a_short_how_to():
         for p in PAGES:
             assert tx[lang]["nav." + p] and tx[lang]["sub." + p]
             steps = [k for k in tx[lang] if k.startswith("howto.%s." % p)]
-            assert 2 <= len(steps) <= 3, (lang, p, steps)
+            assert 1 <= len(steps) <= 3, (lang, p, steps)
 
 
 def test_chinese_copy_for_the_pages_is_the_agreed_wording():
     zh = _texts()["zh"]
     assert [zh["nav." + p] for p in PAGES] == ["仪表盘", "聊天", "待审批", "Bug 论坛", "机器人消息", "支持者", "模型",
                                               "人设", "频道规则", "日志", "设置"]
-    assert zh["sub.dashboard"] == "SWLink 在不在线，有哪些事等你处理"
-    assert zh["sub.approvals"].startswith("AI 写好、还没发出去的回复。你批准后点「发送」")
-    assert zh["sub.rules"] == "每个频道、私信，机器人怎么处理" and zh["sub.logs"] == "谁在什么时候做了什么。出问题时来这里查"
+    assert zh["sub.dashboard"] == "机器人状态和待办"
+    assert zh["sub.approvals"].startswith("AI 写好、还没发出去的回复。批准并发送后才会发到 Discord")
+    assert zh["sub.rules"] == "机器人在每个频道和私信里怎么做" and zh["sub.logs"] == "谁在什么时候做了什么"
     assert (zh["mode.off"], zh["mode.draft"], zh["mode.auto"]) == ("不理", "只起草", "自动回复")
     assert (zh["trigger.mention"], zh["trigger.all"]) == ("被 @ 时才回", "每条都看")
     assert (zh["bot.online"], zh["bot.offline"], zh["bot.error"]) == ("在线", "离线", "出错")

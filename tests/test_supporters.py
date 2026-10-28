@@ -264,12 +264,18 @@ def test_public_view_has_no_claims_and_no_token(rig):
 
 # ---------------------------------------------------------------- order numbers
 
-def test_order_numbers_are_16_to_40_digits_found_in_free_text():
+def test_order_numbers_are_21_to_40_digits_found_in_free_text():
     n27 = "202610240000000000000000012"
     assert sp.extract_order_numbers("my order is %s, thanks" % n27) == [n27]
     assert sp.extract_order_numbers("订单号：%s" % n27) == [n27]
-    assert sp.extract_order_numbers("a %s b %s c %s" % (n27, n27, "1" * 16)) == [n27, "1" * 16]
-    assert sp.extract_order_numbers("1" * 15) == [] and sp.extract_order_numbers("1" * 41) == []
+    assert sp.extract_order_numbers("a %s b %s c %s" % (n27, n27, "1" * 21)) == [n27, "1" * 21]
+    assert sp.extract_order_numbers("1" * 20) == [] and sp.extract_order_numbers("1" * 41) == []
+    discord_id = "1" * 19                                                # people paste their own Discord id too
+    assert sp.extract_order_numbers("my id is %s, order %s" % (discord_id, n27)) == [n27]
+    assert sp.extract_order_numbers(discord_id) == []
+    with pytest.raises(SupporterError, match="21 to 40"):
+        sp.check_order_no(discord_id)
+    assert sp.check_order_no(" %s " % n27) == n27
     assert sp.extract_order_numbers("12 345 678 and no order") == [] and sp.extract_order_numbers("") == []
 
 
@@ -356,7 +362,7 @@ def test_plan_roles_add_the_plan_s_role_to_the_general_one(tmp_path):
     assert rig.sup.handle_order(rig.person("501", roles=[ROLE]), gold).grant_role_ids == [PLAN_ROLE]
 
 
-def test_the_daily_lookup_limit_counts_lookups_not_claimed_orders(tmp_path):
+def test_the_daily_lookup_limit_counts_every_number_a_person_sends(tmp_path):
     rig = Rig(tmp_path, lookups_per_day=3)
     me = rig.person()
     for i in range(3):
@@ -367,6 +373,26 @@ def test_the_daily_lookup_limit_counts_lookups_not_claimed_orders(tmp_path):
     assert rig.sup.handle_order(rig.person("502", "jon"), UNSEEN).reply_key == "not_found"      # per person
     rig.clock.advance(86400 + 1)
     assert rig.sup.handle_order(me, UNSEEN).reply_key == "not_found"                           # a day later
+
+
+def test_probing_claimed_orders_uses_up_the_daily_allowance(tmp_path):
+    rig = Rig(tmp_path, lookups_per_day=3)
+    owner, prober = rig.person("501"), rig.person("502", "jon")
+    claimed = [rig.order() for _ in range(5)]
+    for no in claimed:
+        rig.sup.link_order(no, owner.id, "human:web")                  # claimed by the owner of the numbers
+    assert [rig.sup.handle_order(prober, no).reply_key for no in claimed] == ["claimed_by_other"] * 3 + ["limit"] * 2
+    assert rig.cfg()["lookups"]["502"] and len(rig.cfg()["lookups"]["502"]) == 3
+    # the limit answers before the claim table is even read, so it says nothing about who holds a number
+    assert rig.sup.handle_order(prober, claimed[0]).reply_key == rig.sup.handle_order(prober, UNSEEN).reply_key == "limit"
+    # a person re-sending their own claimed order still gets the role back (inside the allowance)
+    again = rig.sup.handle_order(rig.person("501", roles=[]), claimed[0])
+    assert again.reply_key == "ok" and again.grant_role_ids == [ROLE]
+    # a dry run reads the limit but does not count; a retry neither checks nor counts
+    before = rig.store.path.read_bytes()
+    assert rig.sup.handle_order(rig.person("503", "kim"), claimed[0], dry_run=True).reply_key == "claimed_by_other"
+    assert rig.store.path.read_bytes() == before
+    assert rig.sup.handle_order(prober, claimed[0], retry=True).reply_key == "claimed_by_other"
 
 
 def test_old_lookup_stamps_are_dropped_when_the_file_is_written(tmp_path):
@@ -564,6 +590,15 @@ def test_remarks_that_name_a_member_become_suggestions():
     assert [(g["order"], g["user_id"], g["match"]) for g in got] == [
         ("A1", mid(1), "username"), ("A2", mid(2), "username"), ("A3", mid(3), "id")]
     assert got[0]["name"] == "Mira"
+
+
+def test_a_suggestion_carries_the_remark_and_the_buyer_s_afdian_name_as_plain_text():
+    long_remark = "from mira_k <b>hi</b> " + "x" * 400
+    o = {**_o("C1", long_remark), "user_name": "Fan <script>alert(1)</script> " + "n" * 100}
+    got = match_remarks([o, _o("C2", "mira_k")], MEMBERS)
+    assert got[0]["remark"] == long_remark[:sp.REMARK_SHOWN] and "<b>hi</b>" in got[0]["remark"]   # text, cut short
+    assert got[0]["buyer"].startswith("Fan <script>") and len(got[0]["buyer"]) == 80
+    assert got[1]["remark"] == "mira_k" and got[1]["buyer"] == ""                                # no nickname: empty
 
 
 def test_short_names_unpaid_and_claimed_orders_are_skipped_and_the_longest_match_wins():

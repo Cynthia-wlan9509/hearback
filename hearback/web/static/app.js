@@ -384,15 +384,39 @@ async function pageConversations() {
 async function pageApprovals() {
   const [pend, appr] = await Promise.all([api("GET", "/api/queue?state=pending"), api("GET", "/api/queue?state=approved")]);
   const wrap = h("div", null);
-  const card = (p, approved) => h("div", { class: "card" },
-    h("div", { class: "row" }, h("span", { class: "badge" }, p.kind), h("strong", { class: "grow" }, p.target || p.thread || p.title),
-      h("span", { class: "muted small-text" }, fmtTime(p.created))),
-    p.kind === "tags" ? h("div", { class: "preview" }, [p.add.length ? "+ " + p.add.join(", ") : "", p.remove.length ? "− " + p.remove.join(", ") : ""].filter(Boolean).join("   ")) : h("div", { class: "preview" }, p.text),
-    p.why ? h("div", { class: "sub small-text" }, t("appr.why") + ": " + p.why) : null,
-    h("div", { class: "sub small-text" }, t("appr.by") + ": " + p.actor),
-    approved ? null : h("div", { class: "card-actions" },
-      h("button", { class: "btn primary small", onclick: () => decide(p, "approve") }, t("appr.approve")),
-      h("button", { class: "btn danger small", onclick: () => decide(p, "reject") }, t("appr.reject"))));
+  const TEXT_KINDS = ["reply", "post", "newpost", "edit"];       // the proposals that carry wording a person can fix
+  const card = (p, approved) => {
+    const view = h("div", null);
+    const bar = approved ? null : h("div", { class: "card-actions" });
+    const showText = () => clear(view).appendChild(p.kind === "tags"
+      ? h("div", { class: "preview" }, [p.add.length ? "+ " + p.add.join(", ") : "", p.remove.length ? "− " + p.remove.join(", ") : ""].filter(Boolean).join("   "))
+      : h("div", { class: "preview" }, p.text));
+    const showButtons = () => {
+      clear(bar).appendChild(h("button", { class: "btn primary small", onclick: () => decide(p, "approve") }, t("appr.approve")));
+      bar.appendChild(h("button", { class: "btn danger small", onclick: () => decide(p, "reject") }, t("appr.reject")));
+      if (TEXT_KINDS.includes(p.kind)) bar.appendChild(h("button", { class: "btn small", onclick: showEditor }, t("common.edit")));
+    };
+    function showEditor() {
+      const ta = h("textarea", null);
+      ta.value = p.text;
+      ta.rows = 6;
+      clear(view).appendChild(ta);
+      ta.focus();
+      clear(bar).appendChild(h("button", { class: "btn primary small", onclick: async () => {
+        try { await api("PUT", "/api/queue/" + p.id + "/text", { text: ta.value }); toast(t("common.saved")); renderPage(); } catch (e) { fail(e); }
+      } }, t("common.save")));
+      bar.appendChild(h("button", { class: "btn small", onclick: () => { showText(); showButtons(); } }, t("common.cancel")));
+    }
+    showText();
+    if (bar) showButtons();
+    return h("div", { class: "card" },
+      h("div", { class: "row" }, h("span", { class: "badge" }, p.kind), h("strong", { class: "grow" }, p.target || p.thread || p.title),
+        h("span", { class: "muted small-text" }, fmtTime(p.created))),
+      view,
+      p.why ? h("div", { class: "sub small-text" }, t("appr.why") + ": " + p.why) : null,
+      h("div", { class: "sub small-text" }, t("appr.by") + ": " + p.actor),
+      bar);
+  };
   async function decide(p, what) { try { await api("POST", "/api/queue/" + p.id + "/" + what, {}); renderPage(); } catch (e) { fail(e); } }
   async function sendAll() {
     if (!appr.items.length) { toast(t("appr.nothing")); return; }
@@ -730,8 +754,8 @@ async function pageSupporters() {
       status.className = "small-text " + (r.ok ? "sub" : "err-line");
     } catch (e) { status.textContent = ""; fail(e); } finally { testBtn.disabled = false; }
   } }, t("sup.test"));
-  const connCard = h("div", { class: "card" }, h("h2", null, t("sup.conn")), h("div", { class: "sub small-text" }, t("sup.connWhat")),
-    h("a", { class: "small-text", href: ov.dev_url, target: "_blank", rel: "noopener noreferrer" }, t("sup.openDev")),
+  const connCard = h("div", { class: "card" }, h("h2", null, t("sup.conn")),
+    h("a",{ class: "small-text", href: ov.dev_url, target: "_blank", rel: "noopener noreferrer" }, t("sup.openDev")),
     h("label", { class: "row gap-top" }, enabled, t("sup.enable")),
     h("div", { class: "two" }, field(t("sup.userId"), uid), field(t("sup.token"), tok)),
     h("div", { class: "row" }, h("span", { class: "badge" + (ov.token_set ? "" : " err") }, ov.token_set ? t("sup.tokenSet") : t("sup.tokenNot")),
@@ -823,11 +847,20 @@ async function pageSupporters() {
   let showAmounts = false;
   const ordersBox = h("div", null);
   const amountsBox = h("input", { type: "checkbox", onchange: (e) => { showAmounts = e.target.checked; loadOrders(); } });
-  async function link(o, userId, name, ask) {
-    if (ask && !(await confirmBox(t("sup.claim.title"), t("sup.claim.confirm", { o: o.masked, n: name || userId }), t("sup.claim.go")))) return false;
+  /* `why` (a suggestion) carries the order's remark and the buyer's Afdian name, so the owner sees why it was suggested */
+  async function link(o, userId, name, ask, why) {
+    if (ask) {
+      const text = h("div", null, t("sup.claim.confirm", { o: o.masked, n: name || userId }),
+        why && why.buyer ? h("div", { class: "small-text" }, t("sup.col.buyer") + ": " + why.buyer) : null,
+        why && why.remark ? h("div", { class: "preview" }, t("sup.suggest", { n: why.remark })) : null);
+      if (!(await confirmBox(t("sup.claim.title"), text, t("sup.claim.go")))) return false;
+    }
     try {
       const r = await api("POST", "/api/supporters/link", { order: o.id, user_id: userId });
-      toast(r.failed.length ? t("sup.claim.partial") : t("sup.claim.done"), r.failed.length > 0); renderPage();
+      if (r.failed.length) toast(t("sup.claim.partial"), true);
+      if (r.lookup !== "ok") toast(t("sup.claim.unchecked"), true);          // Afdian was unreachable or not set up
+      else if (!r.failed.length) toast(t("sup.claim.done"));
+      renderPage();
     } catch (e) { fail(e); return false; }
   }
   function openClaim(o) {
@@ -858,17 +891,18 @@ async function pageSupporters() {
     clear(ordersBox);
     if (!r.items.length) { ordersBox.appendChild(h("div", { class: "muted pad" }, t("sup.noOrders"))); return; }
     if (!r.members_available) ordersBox.appendChild(h("div", { class: "sub small-text" }, t("sup.noMembers")));
-    const head = h("tr", null, [t("sup.col.time"), t("sup.col.order"), t("sup.col.plan"), t("sup.col.amount"), t("sup.col.state")].map((x) => h("th", null, x)));
+    const head = h("tr", null, [t("sup.col.time"), t("sup.col.order"), t("sup.col.plan"), t("sup.col.buyer"), t("sup.col.amount"), t("sup.col.state")].map((x) => h("th", null, x)));
     const rows = r.items.map((o) => h("tr", { class: o.suggestions.length && !o.claim ? "hl" : "" },
       h("td", { class: "muted small-text" }, fmtTime(o.time) || "—"), h("td", null, h("code", null, o.masked)),
-      h("td", null, [o.plan_id, o.title].filter(Boolean).join(" · ") || "—"),
+      h("td", null, o.title || (o.plan_id ? o.plan_id.slice(0, 6) : t("sup.customAmount"))),
+      h("td", null, o.buyer || "—"),
       h("td", null, showAmounts ? (o.amount !== undefined ? o.amount : "—") : "•••"),
       h("td", null, o.claim ? h("span", { class: "badge" }, t("sup.claimed") + " @" + (o.claim.user_name || o.claim.user_id))
         : !o.paid ? h("span", { class: "badge idle" }, t("sup.unpaid"))
         : h("div", null, h("span", { class: "badge idle" }, t("sup.unclaimed")), " ",
             h("button", { class: "btn small", onclick: () => openClaim(o) }, t("sup.claimTo")),
             o.suggestions.map((sg) => h("div", null, h("span", { class: "small-text" }, t("sup.suggest", { n: sg.name }) + " "),
-              h("button", { class: "btn small primary", onclick: () => link(o, sg.user_id, sg.name, true) }, t("sup.claimToName", { n: sg.name }))))))));
+              h("button", { class: "btn small primary", onclick: () => link(o, sg.user_id, sg.name, true, sg) }, t("sup.claimToName", { n: sg.name }))))))));
     ordersBox.appendChild(h("table", null, h("thead", null, head), h("tbody", null, rows)));
   }
   async function loadOrders() {

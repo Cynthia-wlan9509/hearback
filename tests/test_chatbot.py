@@ -77,8 +77,11 @@ def test_decide_table():
     assert d(RULE_AUTO, msg(mention=True, content="  ")) == "record"
     assert d(RULE_AUTO, msg(mention=True), last=990.0) == "record"          # cooldown 20 s
     assert d(RULE_AUTO, msg(mention=True), last=970.0) == "auto"
-    assert d(RULE_AUTO, msg(mention=True), n=60) == "draft"                 # hourly cap turns auto into draft
-    assert d(RULE_AUTO, msg(mention=True), n=5, cap=5) == "draft"
+    assert d(RULE_AUTO, msg(mention=True), n=59) == "auto"
+    assert d(RULE_AUTO, msg(mention=True), n=60) == "record"                # at the hourly cap: no model call at all
+    assert d(RULE_AUTO, msg(mention=True), n=5, cap=5) == "record"
+    assert d(RULE_DRAFT, msg(mention=True), n=60) == "record"               # the cap counts drafts too
+    assert d(RULE_DRAFT, msg(mention=True), n=59) == "draft"
 
 
 # ---------------------------------------------------------------- prompt
@@ -146,6 +149,29 @@ def test_inbox_file_is_compacted_to_the_cap(tmp_path, monkeypatch):
         ib.add(msg("m%d" % i, mid=str(i)))
     lines = (tmp_path / ".hearback" / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
     assert 10 <= len(lines) < 520
+
+
+def test_inbox_compaction_is_atomic(tmp_path, monkeypatch):
+    from hearback import util
+    monkeypatch.setattr(chatbot, "INBOX_FILE_CAP", 10)
+    ib = Inbox(tmp_path / ".hearback")
+    for i in range(510):
+        ib.add(msg("m%d" % i, mid=str(i)))
+    path = tmp_path / ".hearback" / "inbox.jsonl"
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 510
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(util, "replace_retry", boom)
+    with pytest.raises(OSError):                                       # the 511th line triggers the rewrite, which fails
+        ib.add(msg("m510", mid="510"))
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 511  # nothing was lost
+    assert [p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")] == []
+    monkeypatch.undo()
+    monkeypatch.setattr(chatbot, "INBOX_FILE_CAP", 10)
+    ib.add(msg("m511", mid="511"))
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 10
 
 
 # ---------------------------------------------------------------- handler
@@ -217,18 +243,40 @@ def test_auto_replies_through_rest_with_mentions_disabled_and_logs_it(tmp_path):
     assert b.bot.inbox.history(b.channel)[-1].is_bot                              # our reply is part of the history
 
 
-def test_hourly_cap_turns_auto_into_draft_and_cooldown_blocks_repeats(tmp_path):
+def test_hourly_cap_stops_model_calls_and_cooldown_blocks_repeats(tmp_path):
     b = Bench(tmp_path, {**RULE_AUTO, "cooldown_s": 0}, cap=2)
     assert [b.incoming(mid="a")["action"], b.incoming(mid="b")["action"]] == ["auto", "auto"]
-    assert b.incoming(mid="c")["action"] == "draft"                              # third one this hour
+    assert b.incoming(mid="c")["action"] == "record" and len(b.calls) == 2       # third one this hour: no model call
+    assert b.bot.inbox.history(b.channel)[-1].id == "c" and b.env.queue.list() == []
+    assert b.bot.model_calls_in_last_hour() == 2 and b.bot.auto_today() == 2
     b.t[0] += 3601
-    assert b.incoming(mid="d")["action"] == "auto"
+    assert b.bot.model_calls_in_last_hour() == 0 and b.incoming(mid="d")["action"] == "auto"
 
     b2 = Bench(tmp_path / "two", RULE_AUTO)                                       # cooldown 20 s
     assert b2.incoming(mid="a")["action"] == "auto"
     assert b2.incoming(mid="b")["action"] == "record"
     b2.t[0] += 21
     assert b2.incoming(mid="c")["action"] == "auto"
+
+
+def test_draft_rules_count_toward_the_cap_across_channels(tmp_path):
+    b = Bench(tmp_path, {**RULE_DRAFT, "cooldown_s": 0}, cap=3)
+    other = b.env.fake.add_channel("second")
+    for i in range(6):                                   # several people, each in their own channel (like DMs)
+        b.reply = "Hi there %d!" % i                     # distinct texts: no duplicate-draft refusal
+        b.bot.handle(msg("@bot hello %d" % i, channel=other if i % 2 else b.channel, mid="m%d" % i, mention=True), BOT)
+    assert len(b.calls) == 3 and len(b.env.queue.list("pending")) == 3
+    assert b.bot.auto_today() == 0                       # drafts are not auto replies
+
+
+def test_a_model_error_still_starts_the_cooldown_and_uses_the_cap(tmp_path):
+    b = Bench(tmp_path, RULE_AUTO, cap=60)               # cooldown 20 s
+    b.reply = LLMError("boom")
+    assert b.incoming(mid="a")["action"] == "error"
+    assert b.incoming(mid="b")["action"] == "record" and len(b.calls) == 1       # the same channel cannot hammer the model
+    assert b.bot.model_calls_in_last_hour() == 1
+    b.t[0] += 21
+    assert b.incoming(mid="c")["action"] == "error" and len(b.calls) == 2
 
 
 def test_off_mode_and_bots_are_not_answered(tmp_path):

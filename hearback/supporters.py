@@ -37,6 +37,7 @@ TOKEN_USER = "afdian-token"                 # keyring user, under the service sh
 ENV_TOKEN = "HEARBACK_AFDIAN_TOKEN"
 USER_AGENT = "hearback-swlink/%s" % __version__
 TIMEOUT_S = 20
+REMARK_SHOWN = 300                         # characters of an order remark shown to the owner
 ORDER_PAGE_SIZE = 50                        # fixed by Afdian: there is no per-page parameter
 STATUS_PAID = "2"
 DAY_S = 86400
@@ -45,7 +46,7 @@ GIVE_UP_S = 3 * DAY_S
 ACTOR_WEB = "human:web"
 ACTOR_BOT = "bot:swlink"
 AUDIT_REASON = "Afdian supporter (SWLink)"
-ORDER_RE = re.compile(r"(?<!\d)\d{16,40}(?!\d)")
+ORDER_RE = re.compile(r"(?<!\d)\d{21,40}(?!\d)")      # Afdian numbers have 26-29 digits; Discord ids 17-20 do not match
 MANAGE_ROLES, ADMINISTRATOR = 1 << 28, 1 << 3
 
 SETTING_KEYS = ("enabled", "afdian_user_id", "role_id", "require_role_ids", "min_amount", "plan_roles",
@@ -67,7 +68,7 @@ def mask(order_no: str) -> str:
 
 
 def extract_order_numbers(text: str) -> list[str]:
-    """Order numbers (16 to 40 digits) in free text, in order of appearance, without repeats."""
+    """Order numbers (21 to 40 digits) in free text, in order of appearance, without repeats."""
     return list(dict.fromkeys(ORDER_RE.findall(text or "")))
 
 
@@ -121,7 +122,7 @@ def _flag(v: Any, what: str) -> bool:
 def check_order_no(v: Any) -> str:
     s = str(v if v is not None else "").strip()
     if not ORDER_RE.fullmatch(s):
-        raise SupporterError("an order number is 16 to 40 digits")
+        raise SupporterError("an order number is 21 to 40 digits")
     return s
 
 
@@ -462,8 +463,9 @@ class Supporters:
     # ---- the decision
     def handle_order(self, person: Person, order_no: str, now: float | None = None, *, retry: bool = False,
                      dry_run: bool = False) -> Outcome:
-        """Decide what to do when `person` sends `order_no`. `retry=True` is the background re-check (it does not use
-        a lookup of the person's daily allowance); `dry_run=True` changes nothing (no claim, no count, no queue)."""
+        """Decide what to do when `person` sends `order_no`. Every number a person sends uses one of their daily lookups,
+        claimed or not (so claimed numbers cannot be probed). `retry=True` is the background re-check and uses none;
+        `dry_run=True` changes nothing (no claim, no count, no queue)."""
         now = float(self.clock() if now is None else now)
         no = check_order_no(order_no)
         uid, masked = str(person.id), mask(no)
@@ -472,6 +474,13 @@ class Supporters:
             need = set(cfg["require_role_ids"])
             if need and not need & {str(r) for r in person.role_ids}:
                 return Outcome("need_verify_first", order=masked)
+            if not retry:
+                looks = [t for t in cfg["lookups"].get(uid, []) if now - float(t) < DAY_S]
+                if len(looks) >= cfg["lookups_per_day"]:
+                    return Outcome("limit", order=masked)
+                if not dry_run:
+                    cfg["lookups"][uid] = looks + [now]
+                    self._commit(cfg, now)
             claim = cfg["claims"].get(no)
             if claim:
                 return self._known(cfg, claim, person, no, now, dry_run)
@@ -480,13 +489,6 @@ class Supporters:
                 notes = ([self.text("note_off", who=self.who(person), order=masked)]
                          if self._once(("off", uid, no), now, dry_run) else [])
                 return Outcome("off", notify_texts=notes, order=masked)
-            if not retry:
-                looks = [t for t in cfg["lookups"].get(uid, []) if now - float(t) < DAY_S]
-                if len(looks) >= cfg["lookups_per_day"]:
-                    return Outcome("limit", order=masked)
-                if not dry_run:
-                    cfg["lookups"][uid] = looks + [now]
-                    self._commit(cfg, now)
         try:
             order = client.find_order(no)
         except SupporterError as e:
@@ -639,7 +641,8 @@ def match_remarks(orders: Iterable[Mapping[str, Any]], members: Sequence[Mapping
                   claimed: Iterable[str] = ()) -> list[dict]:
     """Suggest who an unclaimed paid order belongs to: members whose Discord username, display name or id appears in
     the order's remark. Names must be 3+ characters; the longest match wins and ties are all returned. Suggestions
-    only: the owner confirms each one, nothing is granted from here."""
+    only: the owner confirms each one, nothing is granted from here. Each suggestion carries the order's remark and
+    the buyer's Afdian nickname (plain text, cut short) so the owner can see why it was suggested."""
     taken = {str(x) for x in claimed}
     out: list[dict] = []
     for o in orders:
@@ -667,7 +670,7 @@ def match_remarks(orders: Iterable[Mapping[str, Any]], members: Sequence[Mapping
         for score, m, how in best:
             if score == top:
                 out.append({"order": no, "user_id": str(m.get("id")), "name": str(m.get("display") or m.get("username") or ""),
-                            "match": how})
+                            "match": how, "remark": remark.strip()[:REMARK_SHOWN], "buyer": str(o.get("user_name") or "")[:80]})
     return out
 
 

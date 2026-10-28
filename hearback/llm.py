@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import urllib.parse
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -31,6 +32,7 @@ OUT_OF_TOKENS_ERROR = "ran out of output tokens before answering; raise Max outp
 RETRY_STATUSES = (429, 503)          # a relay's concurrency limit / "no route available, retry later"
 RETRY_WAITS = (2.0, 5.0)             # seconds before the 1st and the 2nd retry when no Retry-After came back
 MAX_RETRY_WAIT = 60.0
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")   # the only hosts where a plain http:// base URL is allowed
 
 
 class LLMError(HearbackError):
@@ -130,6 +132,19 @@ def _openai_content(content: Any) -> Any:
     return out
 
 
+def check_base_url(base_url: str) -> None:
+    """Refuse a plain http:// base URL unless it points at this computer: the API key travels in every request."""
+    if not base_url.lower().startswith("http://"):
+        return
+    try:
+        host = urllib.parse.urlsplit(base_url).hostname or ""
+    except ValueError:
+        host = ""
+    if host not in LOOPBACK_HOSTS:
+        raise LLMError("use https:// for the base URL: plain http:// would send the API key in clear "
+                       "(http is only allowed for localhost)")
+
+
 class Provider:
     """What a provider object offers: one blocking call. A message's content is a string, or a list of
     {"type": "text", "text"} and image blocks (see image_block) when pictures are sent."""
@@ -141,6 +156,7 @@ class Provider:
 class AnthropicProvider(Provider):
     def __init__(self, profile: Mapping[str, Any], key: str, timeout: float):
         import anthropic   # optional extra: hearback-desk[llm]
+        check_base_url(str(profile.get("base_url") or ""))
         self.model = profile["model"]
         self.client = anthropic.Anthropic(api_key=key, base_url=profile.get("base_url") or None, timeout=timeout)
 
@@ -158,6 +174,7 @@ class AnthropicProvider(Provider):
 class OpenAIProvider(Provider):
     def __init__(self, profile: Mapping[str, Any], key: str, timeout: float):
         import openai   # optional extra: hearback-desk[llm]
+        check_base_url(str(profile.get("base_url") or ""))
         self.model = profile["model"]
         self.client = openai.OpenAI(api_key=key, base_url=profile.get("base_url") or None, timeout=timeout)
 
@@ -395,6 +412,7 @@ class LLMStore:
         bu = out.get("base_url", "")
         if bu and not re.match(r"^https?://[^\s/]+", bu):
             raise LLMError("base_url must start with http:// or https://")
+        check_base_url(bu)
         need = next((x["base_url_required"] for x in PRESETS if x["id"] == preset), False)
         if need and not bu:
             raise LLMError("this kind of relay needs a base URL")

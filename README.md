@@ -121,6 +121,8 @@ which **LLM** (your own API keys: Anthropic, OpenAI, DeepSeek, or any OpenAI- or
 whether it is **off**, **drafts for your approval**, or **replies automatically**. The same page shows the
 approval queue and the bug-forum ledger.
 
+[SWLink user manual (Chinese)](docs/swlink-manual.zh-CN.md)
+
 ```
 pip install -e ".[all]"        # or pick extras: llm, bot, keyring, mcp
 hearback web                   # also: swlink. Opens http://127.0.0.1:8765/ in your browser
@@ -133,7 +135,7 @@ First run: **Settings** (paste the bot token, follow the Developer Portal steps,
 Safety model:
 
 - Everything starts **off**. Auto reply is chosen per channel (or per DM default), asks for confirmation, and is
-  capped per hour (`[swlink] hourly_cap`, default 60); past the cap the bot drafts instead.
+  capped per hour (`[swlink] hourly_cap`, default 60, counting every model call); past the cap messages are only recorded.
 - **Draft** mode puts the model's reply in the normal approval queue as `agent:swlink`. A person approves it in the
   console (`human:web`) and sends it; the existing rules (agents cannot approve or send) still apply.
 - The bot only works in servers it was invited to, through the official bot API. Selfbots (running a normal user

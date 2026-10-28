@@ -197,6 +197,17 @@ def test_the_page_never_uses_innerhtml_or_inline_script():
     assert "<script>" not in html and "style=" not in html and "http" not in html.replace("<!doctype html>", "")
 
 
+def test_the_approvals_page_edits_pending_text_and_the_metrics_grid_has_no_lone_card():
+    from pathlib import Path
+    static = Path(web.STATIC_DIR)
+    js = (static / "app.js").read_text(encoding="utf-8")
+    assert 'api("PUT", "/api/queue/" + p.id + "/text", { text: ta.value })' in js
+    assert 'TEXT_KINDS.includes(p.kind)' in js and 't("common.edit")' in js and 'if (bar) showButtons();' in js   # pending only
+    css = (static / "app.css").read_text(encoding="utf-8")
+    assert "grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))" in css
+    assert "@media (max-width: 1265px) { .metrics:has(> :nth-child(6))" in css
+
+
 # ---------------------------------------------------------------- port handling
 
 def test_a_busy_port_falls_back_to_a_free_one(tmp_path):
@@ -311,6 +322,41 @@ def test_queue_approve_reject_send_through_the_api(web_env):
     events = {(x["actor"], x["action"]) for x in e.ledger.read_events()}
     assert ("human:web", "approve") in events and ("human:web", "reject") in events and ("human:web", "send") in events
     assert w.call("POST", "/api/queue/%s/approve" % p2.id, {}).status == 400      # already rejected
+
+
+def test_a_pending_proposal_can_be_reworded_through_the_api(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("general")
+    p1 = e.queue.propose("post", actor="agent:swlink", thread=ch, text="Draft one", why="x")
+    p2 = e.queue.propose("post", actor="agent:swlink", thread=ch, text="Draft two", why="x")
+    r = w.ok("PUT", "/api/queue/%s/text" % p1.id, {"text": "Better wording\n"})
+    assert r["text"] == "Better wording" and r["state"] == "pending" and r["id"] == p1.id
+    assert ("human:web", "edit_proposal") in {(x["actor"], x["action"]) for x in e.ledger.read_events()}
+    assert w.ok("GET", "/api/queue?state=pending")["items"][0]["text"] == "Better wording"
+    for body in ({}, {"text": ""}, {"text": "  \n"}, {"text": 5}, {"text": ["a"]}, {"text": "x" * 8001}):
+        assert w.call("PUT", "/api/queue/%s/text" % p1.id, body).status == 400, body
+    assert w.ok("GET", "/api/queue?state=pending")["items"][0]["text"] == "Better wording"
+    assert w.call("PUT", "/api/queue/nope/text", {"text": "x"}).status == 400
+    assert w.call("PUT", "/api/queue/%s/text" % p1.id, {"text": "x"}, key=None).status == 403
+    w.ok("POST", "/api/queue/%s/approve" % p1.id)
+    refused = w.call("PUT", "/api/queue/%s/text" % p1.id, {"text": "Too late"})        # only pending ones can change
+    assert refused.status == 400 and "pending" in refused.json["error"]
+    w.ok("POST", "/api/queue/%s/reject" % p2.id)
+    assert w.call("PUT", "/api/queue/%s/text" % p2.id, {"text": "Too late"}).status == 400
+    w.ok("POST", "/api/queue/send")
+    sent = [c for c in e.fake.writes() if c.path == "/channels/%s/messages" % ch]
+    assert [c.body["content"] for c in sent] == ["Better wording"]                       # the edited text is what goes out
+
+
+def test_a_negative_content_length_is_refused_instead_of_waited_on(web_env):
+    conn = http.client.HTTPConnection("127.0.0.1", web_env.port, timeout=5)
+    conn.request("POST", "/api/bot/start", b"", {"Host": "127.0.0.1:%d" % web_env.port, web.KEY_HEADER: SECRET,
+                                                  "Content-Type": "application/json", "Content-Length": "-5"})
+    r = conn.getresponse()
+    assert r.status == 400 and b"Content-Length" in r.read()
+    conn.close()
+    big = web_env.call("POST", "/api/bot/start", b"{}", headers={"Content-Length": str(web.MAX_BODY + 1)})
+    assert big.status in (400, 413)                                                      # the 1 MB limit still holds
 
 
 # ---------------------------------------------------------------- conversations

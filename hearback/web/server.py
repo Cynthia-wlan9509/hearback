@@ -48,7 +48,9 @@ MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
         ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
         ".ico": "image/x-icon", ".json": "application/json; charset=utf-8"}
 # View Channels, Send Messages, Send Messages in Threads, Read Message History, Attach Files
-INVITE_PERMISSIONS = (1 << 10) | (1 << 11) | (1 << 38) | (1 << 16) | (1 << 15)
+# view, send, send in threads, read history, attach files; manage threads (forum tags on players' posts);
+# manage roles (Supporters page). The owner can untick any of them on Discord's invite screen.
+INVITE_PERMISSIONS = (1 << 10) | (1 << 11) | (1 << 38) | (1 << 16) | (1 << 15) | (1 << 34) | (1 << 28)
 PORTAL_URL = "https://discord.com/developers/applications"
 TEXT_CHANNEL_TYPES = (0, 5)
 SEND_LIMIT = 8000
@@ -250,6 +252,7 @@ class App:
         add("POST", "/api/queue/send", self.api_queue_send)
         add("POST", "/api/queue/([\\w-]+)/approve", self.api_queue_approve)
         add("POST", "/api/queue/([\\w-]+)/reject", self.api_queue_reject)
+        add("PUT", "/api/queue/([\\w-]+)/text", self.api_queue_text)
         add("GET", "/api/llm", self.api_llm_get)
         add("POST", "/api/llm", self.api_llm_create)
         add("GET", "/api/llm/presets", lambda q: (200, {"items": PRESETS}))
@@ -446,6 +449,15 @@ class App:
 
     def api_queue_reject(self, q: Request) -> tuple[int, Any]:
         return 200, self._proposal(self.queue.reject([q.groups[0]], ACTOR, str(q.body.get("reason") or ""))[0])
+
+    def api_queue_text(self, q: Request) -> tuple[int, Any]:
+        """Edit the wording of a pending proposal (the queue refuses any other state)."""
+        text = q.body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ApiError(400, "the message is empty")
+        if len(text) > SEND_LIMIT:
+            raise ApiError(400, "the message is over %d characters" % SEND_LIMIT)
+        return 200, self._proposal(self.queue.set_text(q.groups[0], text, ACTOR))
 
     def api_queue_send(self, q: Request) -> tuple[int, Any]:
         ids = [str(i) for i in q.body.get("ids") or []] or None
@@ -749,13 +761,14 @@ class App:
         members, members_ok = self._guild_members()
         suggest: dict[str, list[dict]] = {}
         for s in match_remarks(orders, members, claimed=claims):
-            suggest.setdefault(s["order"], []).append({"user_id": s["user_id"], "name": s["name"], "match": s["match"]})
+            suggest.setdefault(s["order"], []).append({k: s[k] for k in ("user_id", "name", "match", "remark", "buyer")})
         items = []
         for o in orders:
             no = str(o.get("out_trade_no") or "")
             c = claims.get(no)
             item = {"id": no, "masked": mask(no), "time": _order_time(o), "plan_id": str(o.get("plan_id") or ""),
-                    "title": str(o.get("title") or ""), "paid": str(o.get("status")) == "2",
+                    "title": str(o.get("plan_title") or o.get("title") or "")[:80],
+                    "buyer": str(o.get("user_name") or "")[:80], "paid": str(o.get("status")) == "2",
                     "claim": {"user_id": str(c.get("user_id")), "user_name": str(c.get("user_name") or ""),
                               "at": str(c.get("at") or "")} if c else None,
                     "suggestions": suggest.get(no, [])}
@@ -809,7 +822,8 @@ class App:
         """Dry run of a supporter DM. It asks Afdian and Discord (reads only) and writes nothing anywhere."""
         cfg = self.supporters_store.load()
         uid = str(q.body.get("user_id") or "").strip()
-        person = Person(id="0", name="simulated", display="Simulated member", role_ids=set(cfg["require_role_ids"]))
+        person = Person(id="0", name="simulated", display="模拟成员" if self.cfg.language == "zh" else "Simulated member",
+                        role_ids=set(cfg["require_role_ids"]))
         assumed = not uid
         client = None
         guild = self._supporter_guild()
@@ -978,6 +992,8 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
+                return self._error(400, "bad Content-Length")
+            if n < 0:
                 return self._error(400, "bad Content-Length")
             if n > MAX_BODY:
                 return self._error(413, "body too large")

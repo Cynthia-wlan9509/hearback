@@ -221,13 +221,17 @@ def test_the_member_picker_searches_by_name_and_skips_bots(sup):
 
 def test_the_orders_table_hides_amounts_and_shows_claim_state(sup):
     sup.configure()
-    paid = sup.order(total_amount="12.50", title="Monthly", plan_id="plan-a")
+    paid = sup.order(total_amount="12.50", plan_title="Monthly", plan_id="plan-a", user_name="Fan Club")
+    custom = sup.order(user_name="")
     sup.order(status=1)
     sup.w.ok("POST", "/api/supporters/link", {"order": paid, "user_id": sup.mira["id"]})
     r = sup.w.ok("GET", "/api/supporters/orders")
     assert "amount" not in json.dumps(r) and "12.5" not in json.dumps(r)
     first = next(o for o in r["items"] if o["id"] == paid)
     assert first["masked"] == mask(paid) and first["title"] == "Monthly" and first["plan_id"] == "plan-a" and first["paid"]
+    assert first["buyer"] == "Fan Club"                                    # the buyer's Afdian nickname
+    free = next(o for o in r["items"] if o["id"] == custom)
+    assert free["title"] == "" and free["plan_id"] == "" and free["buyer"] == ""    # the page shows "custom amount"
     assert first["claim"]["user_id"] == sup.mira["id"] and first["claim"]["user_name"] == "mira"
     unpaid = next(o for o in r["items"] if not o["paid"])
     assert unpaid["claim"] is None
@@ -242,10 +246,12 @@ def test_unclaimed_orders_whose_remark_names_a_member_get_a_suggestion_only(sup)
     before = sup.roles_of(sup.mira)
     r = sup.w.ok("GET", "/api/supporters/orders")
     by = {o["id"]: o for o in r["items"]}
-    assert by[hint]["suggestions"] == [{"user_id": sup.mira["id"], "name": "Mira", "match": "username"}]
+    assert by[hint]["suggestions"] == [{"user_id": sup.mira["id"], "name": "Mira", "match": "username",
+                                        "remark": "for mira please", "buyer": by[hint]["buyer"]}]
+    assert by[hint]["buyer"].startswith("Buyer ")                   # the owner sees why it was suggested
     assert by[other]["suggestions"] == [] and r["members_available"] is True
     assert sup.roles_of(sup.mira) == before and sup.store.load()["claims"] == {}           # nothing granted by itself
-    assert "remark" not in json.dumps(r)
+    assert "no names here" not in json.dumps(r)                     # remarks of orders without a suggestion stay home
     sup.app._members_cache = None
     sup.fake.fail_next(r"GET /guilds/\d+/members$", 403)
     r2 = sup.w.ok("GET", "/api/supporters/orders")
@@ -300,6 +306,17 @@ def test_a_link_still_works_when_afdian_cannot_be_asked(sup):
     sup.afdian.fail_next(urllib.error.URLError("down"))
     r = sup.w.ok("POST", "/api/supporters/link", {"order": no, "user_id": sup.mira["id"]})
     assert r["lookup"] == "failed" and sup.supporter in sup.roles_of(sup.mira)
+
+
+def test_a_link_reports_when_afdian_did_not_check_the_order(sup):
+    sup.w.ok("PUT", "/api/supporters/settings", {"role_id": sup.supporter})          # no Afdian user_id or token at all
+    r = sup.w.ok("POST", "/api/supporters/link", {"order": UNSEEN, "user_id": sup.mira["id"]})
+    assert r["lookup"] == "skipped" and sup.supporter in sup.roles_of(sup.mira) and sup.afdian.calls == []
+    sup.configure()
+    ok = sup.w.ok("POST", "/api/supporters/link", {"order": sup.order(), "user_id": sup.jon["id"]})
+    assert ok["lookup"] == "ok"                                                      # only "ok" counts as checked
+    js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'r.lookup !== "ok"' in js and 't("sup.claim.unchecked")' in js
 
 
 def test_a_link_that_the_bot_cannot_finish_says_which_role_to_move(sup):
@@ -679,13 +696,29 @@ def _texts():
 def test_the_supporters_page_copy_is_the_agreed_wording():
     zh = _texts()["zh"]
     assert zh["nav.supporters"] == "支持者"
-    assert zh["sub.supporters"] == "支持者在爱发电付款后，私信机器人订单号，自动拿到支持者身份组。金额不会公开。"
+    assert zh["sub.supporters"] == "支持者私信订单号，核对后自动给身份组。金额不公开"
     assert "afdian.com/dashboard/dev" in zh["howto.supporters.1"] and "user_id" in zh["howto.supporters.1"] and "API Token" in zh["howto.supporters.1"]
     assert "「模拟私信」" in zh["howto.supporters.3"] and "「私信核对」" in zh["howto.supporters.3"]
-    assert zh["sup.dmWarn"] == "如果同一个机器人还被别的程序用来处理订单号，不要同时打开，否则会回两次"
+    assert zh["sup.dmWarn"] == "别让两个程序同时处理这个机器人的私信，否则会回两次"
     assert zh["sup.showAmounts"] == "显示金额" and zh["sup.claimed"] == "已认领" and zh["sup.unclaimed"] == "未认领"
     assert zh["sup.claimTo"] == "认领给…" and zh["sup.revoke"] == "撤销" and zh["sup.require"].startswith("先要有这些身份组之一")
     assert zh["sup.sim"] == "模拟私信" and zh["sup.dm"] == "私信核对"
+
+
+def test_the_orders_table_and_the_claim_dialog_use_plain_text_and_the_new_copy():
+    tx = _texts()
+    for lang in ("zh", "en"):
+        for key in ("sup.claim.unchecked", "sup.customAmount", "sup.col.buyer"):
+            assert tx[lang][key].strip(), (lang, key)
+    assert tx["zh"]["sup.claim.unchecked"] == "已认领，但爱发电没核对这个订单（没连上或没设置），请自己确认过。"
+    assert (tx["zh"]["sup.customAmount"], tx["en"]["sup.customAmount"]) == ("自选金额", "Custom amount")
+    assert (tx["zh"]["sup.col.buyer"], tx["en"]["sup.col.buyer"]) == ("爱发电昵称", "Afdian name")
+    assert "21 到 40" in tx["zh"]["sup.simNoOrder"] and "21 to 40" in tx["en"]["sup.simNoOrder"]
+    assert "16" not in tx["zh"]["sup.simNoOrder"] + tx["en"]["sup.simNoOrder"]
+    js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'o.plan_id.slice(0, 6) : t("sup.customAmount")' in js and 't("sup.col.buyer")' in js
+    assert "why.remark" in js and "why.buyer" in js and "link(o, sg.user_id, sg.name, true, sg)" in js
+    assert "innerHTML" not in js                                  # the remark and the nickname go in as text nodes
 
 
 def test_the_page_is_in_the_menu_after_bot_messages_and_wired_to_the_api():
