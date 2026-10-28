@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from hearback import llm, review
 from hearback.agents import AgentStore
-from hearback.chatbot import Inbox, RuleStore, message_from_rest
+from hearback.chatbot import POLISH_SYSTEM, Inbox, RuleStore, message_from_rest
 from hearback.config import Config, Variant
 from hearback.fake import START_MS, FakeAfdian, FakeDiscord, make_png
 from hearback.ledger import Ledger
@@ -124,6 +124,8 @@ class DemoProvider(llm.Provider):
         text = _text_of(messages[-1]["content"])
         if system.startswith("You are a connectivity test"):
             return "OK"
+        if system == POLISH_SYSTEM:
+            return self._polish(text)
         if "OUTPUT CONTRACT" in system:
             m = re.search(r"^Title: (.*)$", text, re.M)
             return json.dumps(self.reviews.get(m.group(1).strip() if m else "") or self._unknown(), ensure_ascii=False)
@@ -137,6 +139,20 @@ class DemoProvider(llm.Provider):
                 "need_info": "设备、版本和步骤。" if zh else "Device, build and steps.",
                 "reply_draft": "谢谢反馈！能补充设备、版本和步骤吗？" if zh else "Thanks! Could you add device, build and steps?",
                 "tags_add": [], "tags_remove": []}
+
+    @staticmethod
+    def _polish(prompt: str) -> str:
+        """Tidy the draft between the markers: spacing, a capital letter, end punctuation."""
+        body = prompt.split("<<<DRAFT>>>", 1)[-1].split("<<<END DRAFT>>>", 1)[0]
+        lines = [" ".join(ln.split()) for ln in body.strip().splitlines()]
+        out = []
+        for ln in lines:
+            if ln and ln[0].isascii() and ln[0].isalpha():
+                ln = ln[0].upper() + ln[1:]
+            if ln and ln[-1] not in ".!?。！？：:)）":
+                ln += "。" if any("一" <= ch <= "鿿" for ch in ln) else "."
+            out.append(ln)
+        return "\n".join(out)
 
     def _draft(self, prompt: str) -> str:
         block = prompt.split("NEW message to answer:")[-1]

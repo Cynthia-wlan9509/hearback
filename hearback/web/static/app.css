@@ -126,9 +126,9 @@ tr:last-child td { border-bottom: 0; }
 .conv-item { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 8px 14px; cursor: pointer; }
 .conv-item:hover { background: var(--field); }
 .conv-item.active { background: var(--soft); }
-.conv-item .nm { display: flex; justify-content: space-between; gap: 6px; font-weight: 500; }
+.conv-item .nm { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-weight: 500; }
 .conv-item .pv { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mode-tag { font-size: 11px; padding: 0 7px; border-radius: 99px; background: var(--field); color: var(--muted); border: 1px solid var(--line); flex: none; }
+.mode-tag { font-size: 11px; padding: 0 7px; border-radius: 99px; background: var(--field); color: var(--muted); border: 1px solid var(--line); flex: none; white-space: nowrap; }
 .mode-tag.draft { background: var(--soft); color: var(--accent-dark); border-color: var(--soft); }
 .mode-tag.auto { background: var(--accent); color: #fff; border-color: var(--accent); }
 .chat-head { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
@@ -232,7 +232,7 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
 .facts { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; color: var(--sub); }
 .lbl { font-size: 12px; color: var(--sub); margin: 8px 0 2px; }
 .codes { display: flex; gap: 6px; flex-wrap: wrap; }
-.draft { min-height: 130px; }
+textarea.draft { min-height: 130px; }
 .adopt-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .adopt-label { width: 64px; flex: none; color: var(--sub); font-size: 13px; }
 .adopt-row select, .adopt-row input[type=text] { width: 100%; }

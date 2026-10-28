@@ -143,6 +143,23 @@ function modeSelect(value, onchange) {
 function empty(title, text, btn) { return h("div", { class: "card empty" }, h("h3", null, title), h("div", null, text), btn); }
 function go(page) { location.hash = "#/" + page; }
 function goBtn(page, label, primary) { return h("button", { class: "btn" + (primary === false ? "" : " primary"), onclick: () => go(page) }, label); }
+// 「润色」: the model rewrites what you typed in the box; 「撤回」 puts your words back until you type again
+function polishButtons(ta, extra, small) {
+  let before = null;
+  const cls = "btn" + (small ? " small" : "");
+  const undo = h("button", { class: cls, hidden: true, onclick: () => { if (before === null) return; ta.value = before; reset(); ta.dispatchEvent(new Event("input")); } }, t("polish.undo"));
+  const reset = () => { before = null; undo.hidden = true; };
+  const btn = h("button", { class: cls, title: t("polish.hint"), onclick: async () => {
+    if (!ta.value.trim()) { toast(t("polish.empty"), true); ta.focus(); return; }
+    btn.disabled = true; const label = btn.textContent; btn.textContent = t("polish.working");
+    try {
+      const r = await api("POST", "/api/polish", Object.assign({ text: ta.value }, extra ? extra() : {}));
+      const old = ta.value; ta.value = r.text; ta.dispatchEvent(new Event("input")); before = old; undo.hidden = false;
+    } catch (e) { fail(e); } finally { btn.disabled = false; btn.textContent = label; }
+  } }, t("polish.btn"));
+  ta.addEventListener("input", (ev) => { if (ev.isTrusted) reset(); });
+  return [btn, undo];
+}
 function field(label, input) { return h("label", { class: "field" }, h("span", null, label), input); }
 function fieldHint(label, input, hint) { return h("label", { class: "field" }, h("span", null, label), input, h("div", { class: "sub small-text hint" }, hint)); }
 function statusLabel(s) { return hasKey("forum.st." + s) ? t("forum.st." + s) : s; }
@@ -344,7 +361,8 @@ async function pageConversations() {
     clear(chatBox).appendChild(h("div", { class: "chat-head" }, (c.kind === "dm" ? "" : c.guild_name + " / # ") + c.channel_name));
     chatBox.appendChild(body);
     chatBox.appendChild(h("div", { class: "composer" }, ta,
-      h("div", { class: "row end" }, h("span", { class: "sub small-text" }, t("conv.agent")), agentSel, draftBtn, sendBtn),
+      h("div", { class: "row end" }, h("span", { class: "sub small-text" }, t("conv.agent")), agentSel, draftBtn,
+        ...polishButtons(ta, () => ({ agent: agentSel.value, channel: c.id })), sendBtn),
       h("div", { class: "composer-meta" },
         h("span", null, t("conv.model", { m: model }) + " · ", h("a", { href: "#/llm" }, t("conv.change"))),
         h("span", null, t("conv.mode") + " ", modeSel))));
@@ -418,6 +436,7 @@ async function pageApprovals() {
       clear(bar).appendChild(h("button", { class: "btn primary small", onclick: async () => {
         try { await api("PUT", "/api/queue/" + p.id + "/text", { text: ta.value }); toast(t("common.saved")); renderPage(); } catch (e) { fail(e); }
       } }, t("common.save")));
+      polishButtons(ta, () => ({ channel: p.thread || "" }), true).forEach((b) => bar.appendChild(b));
       bar.appendChild(h("button", { class: "btn small", onclick: () => { showText(); showButtons(); } }, t("common.cancel")));
     }
     showText();
@@ -660,7 +679,7 @@ async function pageForum() {
       h("div", { class: "lbl" }, t("forum.draft")), draft,
       h("div", { class: "two" }, field(t("forum.tagsAdd"), tagsAdd), field(t("forum.tagsRemove"), tagsRem)), dl,
       h("div", { class: "sub small-text" }, t("forum.tagsHint")),
-      h("div", { class: "row end" }, goBtn("approvals", t("forum.goApprovals"), false), proposeBtn),
+      h("div", { class: "row end" }, goBtn("approvals", t("forum.goApprovals"), false), ...polishButtons(draft, () => ({ channel: d.id })), proposeBtn),
       h("h3", null, t("forum.adoptHead")),
       h("div", { class: "sub small-text" }, t("forum.current") + ": " + statusLabel(st) + (d.triage && d.triage.cluster ? " · " + d.triage.cluster : "") + (d.triage && d.triage.reviewed ? " · " + t("forum.reviewedAt", { t: fmtTime(d.triage.reviewed) }) : "")),
       adoptRow(cSt, t("forum.status"), stSel), adoptRow(cCl, t("forum.cluster"), clInp), adoptRow(cCa, t("forum.cause"), caInp),
@@ -749,7 +768,8 @@ async function pageBotMsgs() {
     const counter = h("div", { class: "counter small-text" });
     const upd = () => { counter.textContent = t("bm.counter", { n: ta.value.length }); counter.classList.toggle("over", ta.value.length > 2000); };
     ta.addEventListener("input", upd); upd();
-    modal(t("bm.editTitle"), h("div", null, ta, counter, h("div", { class: "sub small-text" }, t("bm.sameSyncNote"))), [
+    modal(t("bm.editTitle"), h("div", null, ta, counter, h("div", { class: "row end" }, ...polishButtons(ta, () => ({ channel: r.channel }), true)),
+      h("div", { class: "sub small-text" }, t("bm.sameSyncNote"))), [
       { label: t("common.cancel") },
       { label: t("common.save"), cls: "primary", run: async () => {
         try { await api("PUT", "/api/botmsgs/" + r.channel + "/" + m.id, { text: ta.value }); toast(t("common.saved")); load(r.channel); }

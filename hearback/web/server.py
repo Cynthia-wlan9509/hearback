@@ -25,7 +25,7 @@ from typing import Any, Callable, Sequence
 from hearback import __version__, actions, editor, review
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
-                              display_name, message_from_rest)
+                              build_polish, clean_polish, display_name, message_from_rest)
 from hearback.config import Config, load_config, save_discord_ids
 from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
@@ -253,6 +253,7 @@ class App:
         add("GET", "/api/conversations", self.api_conversations)
         add("GET", "/api/conversations/(\\d+)/messages", self.api_conv_messages)
         add("POST", "/api/conversations/(\\d+)/draft", self.api_conv_draft)
+        add("POST", "/api/polish", self.api_polish)
         add("POST", "/api/conversations/(\\d+)/send", self.api_conv_send)
         add("GET", "/api/rules", self.api_rules_get)
         add("PUT", "/api/rules", self.api_rules_put)
@@ -419,6 +420,24 @@ class App:
         text, pid = complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)
         self.ledger.event(ACTOR, "ai_draft", channel, {"agent": agent["id"], "profile": pid})
         return 200, {"text": text, "agent": agent["id"], "profile": pid}
+
+    def api_polish(self, q: Request) -> tuple[int, Any]:
+        """Polish text the moderator typed. Nothing is sent; the page puts the result back in the box."""
+        text = str(q.body.get("text") or "")
+        if not text.strip():
+            raise ApiError(400, "type something first")
+        if len(text) > SEND_LIMIT:
+            raise ApiError(400, "the message is over %d characters" % SEND_LIMIT)
+        prefer = None
+        if q.body.get("agent"):
+            prefer = self.agents.get_or_auto(str(q.body["agent"])).get("profile_id") or None
+        system, messages = build_polish(text)
+        out, pid = complete_any(self.llm, system, messages, prefer=prefer)
+        out = clean_polish(out)
+        if not out:
+            raise ApiError(502, EMPTY_TEXT_ERROR)
+        self.ledger.event(ACTOR, "ai_polish", q.body.get("channel") or None, {"profile": pid, "chars": len(text)})
+        return 200, {"text": out, "profile": pid}
 
     def api_conv_send(self, q: Request) -> tuple[int, Any]:
         text = str(q.body.get("text") or "")

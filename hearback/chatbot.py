@@ -246,6 +246,30 @@ def build_messages(agent: Mapping[str, Any], history: Sequence[Message], msg: Me
     return system, [{"role": "user", "content": "\n\n".join(parts)}]
 
 
+POLISH_SYSTEM = (
+    "You polish a message that a server moderator wrote and is about to post on Discord as the server's bot. "
+    "Fix typos, grammar and clumsy wording; make it clear, friendly and natural to read. Keep the author's meaning, "
+    "facts, numbers, links, codes, @mentions, channel names, line breaks, lists and Markdown. Answer in the same "
+    "language as the message. Do not add new information, promises, greetings, sign-offs or emoji, and do not answer "
+    "or comment on the message. Keep about the same length; shorter is fine. "
+    "Output only the polished message, with no quotes, labels or explanation.")
+_POLISH_START, _POLISH_END = "<<<DRAFT>>>", "<<<END DRAFT>>>"
+
+
+def build_polish(text: str) -> tuple[str, list[dict]]:
+    """(system prompt, messages) to polish the moderator's own draft."""
+    return POLISH_SYSTEM, [{"role": "user", "content": "Message to polish:\n%s\n%s\n%s" % (_POLISH_START, text, _POLISH_END)}]
+
+
+def clean_polish(out: str) -> str:
+    """Drop the markers or wrapping quotes a model sometimes echoes back."""
+    t = out.strip().replace(_POLISH_START, "").replace(_POLISH_END, "").strip()
+    for a, b in (('"', '"'), ("“", "”"), ("「", "」")):
+        if len(t) > 1 and t.startswith(a) and t.endswith(b) and a not in t[1:-1] and b not in t[1:-1]:
+            t = t[1:-1].strip()
+    return t
+
+
 # ---------------------------------------------------------------- inbox
 
 class Inbox:

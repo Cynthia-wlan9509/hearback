@@ -5,6 +5,7 @@ import http.client
 import json
 import socket
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -429,6 +430,31 @@ def test_ai_draft_returns_text_and_sends_nothing(web_env):
     assert "Where is the download link?" in seen[0][1][0]["content"] and "UNTRUSTED DISCORD TEXT" in seen[0][1][0]["content"]
     r = w.ok("POST", "/api/conversations/%s/draft" % ch, {"agent": "bug-desk"})
     assert r["agent"] == "bug-desk"
+
+
+def test_ai_polish_rewrites_my_text_and_sends_nothing(web_env):
+    w, e = web_env, web_env.env
+    w.ok("POST", "/api/llm", {"name": "Main", "protocol": "openai", "model": "m", "key": KEY})
+    seen = []
+
+    class P(llm.Provider):
+        def complete(self, system, messages, max_tokens):
+            seen.append((system, messages))
+            return "<<<DRAFT>>>\n“The fix ships in the next build.”\n<<<END DRAFT>>>"
+    set_provider_factory("openai", lambda profile, key, timeout: P())
+    before = len(e.fake.writes())
+    r = w.ok("POST", "/api/polish", {"text": "fix is in next buld", "agent": "auto", "channel": "123"})
+    assert r["text"] == "The fix ships in the next build." and len(e.fake.writes()) == before
+    assert "fix is in next buld" in seen[0][1][0]["content"] and "same language" in seen[0][0]
+    ev = [x for x in e.ledger.read_events() if x["action"] == "ai_polish"]
+    assert ev and ev[-1]["actor"] == "human:web" and "fix is in" not in json.dumps(ev[-1])   # length only, not the words
+    assert w.call("POST", "/api/polish", {"text": "  "}).status == 400
+    assert w.call("POST", "/api/polish", {"text": "x" * 9000}).status == 400
+
+
+def test_polish_buttons_sit_next_to_every_box_you_type_a_reply_in():
+    js = (Path(web.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+    assert js.count("polishButtons(") == 5          # the helper + composer, approvals editor, forum reply, bot message edit
 
 
 def test_ai_draft_errors_are_plain(web_env):
