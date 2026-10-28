@@ -250,6 +250,26 @@ the agent-facing MCP surface changes.
   shows a card that says which permissions to turn on.
 - Without discord.py the console still works over REST (read channels, human send, AI draft, approvals); only the live
   gateway needs the `bot` extra. Without the forum configured, chat features need just the token.
+- **Supporters** (`supporters.py`, the Supporters page): Afdian payments to a Discord role. A supporter DMs the bot an
+  Afdian order number (16 to 40 digits found in free text); `Supporters.handle_order` checks it with Afdian's open API
+  (`https://afdian.com/api/open/`, `ping`, `query-order`, POST JSON `{user_id, params, ts, sign}` with
+  `sign = md5(token + "params" + params + "ts" + ts + "user_id" + user_id)`; the token is never sent) and returns an
+  `Outcome(reply_key, grant_role_ids, notify_texts)`. Rules in order: a required role first (`require_role_ids`), an
+  order already claimed (by someone else: refuse and tell the owner; by the same person: re-grant a missing role),
+  then the per-person daily lookup limit, then the lookup itself: API failure queues a retry (every 10 minutes, given up
+  after 3 days with a note to the owner), unknown or unpaid (`status != 2`) is a polite "not found yet", an amount below
+  `min_amount` is a polite refusal, otherwise the order is recorded as a claim and `role_id` (plus the plan's role from
+  `plan_roles`) is granted. Replies are templates (`supporter_*`, zh and en, workspace-overridable) and never carry an
+  amount; notices to the owner mask order numbers (first 4 + ... + last 4). State lives in `.hearback/supporters.json`
+  (settings, `claims`, `retry`, `lookups`; a damaged file is an error, never a silent reset); the Afdian token lives
+  only in the keyring (service `hearback-swlink`, user `afdian-token`) or `HEARBACK_AFDIAN_TOKEN`. The brain never
+  touches Discord; `SupporterBot` applies a decision over REST (`PUT /guilds/{g}/members/{u}/roles/{r}` with
+  `X-Audit-Log-Reason`), refuses to send a role the bot's top role is not above and records the exact fix for the page,
+  and runs the retry loop without the gateway. DMs reach it from `App.on_message` only when `enabled and dm_handling`,
+  before the AI rules. Owner actions (`link_order`, `unlink`) and bot actions are events (`human:web`, `bot:swlink`).
+  `match_remarks` only suggests a member for an unclaimed order whose Afdian remark names them; the owner confirms.
+  `POST /api/supporters/simulate` runs the same brain with `dry_run=True`: read-only Afdian and Discord calls, no claim,
+  no lookup count, no queue entry, no write anywhere.
 
 ## 4. Config (`hearback.toml`)
 

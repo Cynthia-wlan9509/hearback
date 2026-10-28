@@ -272,3 +272,9 @@ label.field > .hint { display: block; margin: 4px 0 0; font-size: 12px; color: v
   .main.fill .view { display: block; }
   .main.fill .conv { height: auto; }
 }
+
+/* supporters */
+tr.hl td { background: var(--soft); }
+.warn-line { display: block; margin: 8px 0; padding: 6px 12px; border-radius: 8px; line-height: 1.5; }
+.gap-top { margin-top: 12px; }
+.member-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }

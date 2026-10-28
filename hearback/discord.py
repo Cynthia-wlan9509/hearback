@@ -182,15 +182,18 @@ class DiscordClient:
         return text.replace(self._token, "***") if self._token else text
 
     def request(self, method: str, path: str, params: dict | None = None, body: Any = None,
-                files: Sequence[dict] | None = None) -> Any:
+                files: Sequence[dict] | None = None, reason: str | None = None) -> Any:
         """Call the API. 429 waits retry_after and retries; other errors >= 400 raise DiscordError.
 
-        With `files`, `body` becomes payload_json and the request is multipart/form-data.
+        With `files`, `body` becomes payload_json and the request is multipart/form-data. `reason` goes into the
+        server's audit log (X-Audit-Log-Reason, URL-encoded) for the calls that support it, e.g. role changes.
         """
         url = self.base_url + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         headers = {"Authorization": "Bot " + self._token, "User-Agent": USER_AGENT}
+        if reason:
+            headers["X-Audit-Log-Reason"] = urllib.parse.quote(reason[:512], safe="")
         data: bytes | None = None
         if files:
             data, headers["Content-Type"] = build_multipart(body or {}, files)

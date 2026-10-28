@@ -3,7 +3,7 @@
    The texts live in i18n.js (loaded first). */
 
 const NAV = [
-  ["nav.features", ["dashboard", "conversations", "approvals", "forum", "botmsgs"]],
+  ["nav.features", ["dashboard", "conversations", "approvals", "forum", "botmsgs", "supporters"]],
   ["nav.system", ["llm", "agents", "rules", "logs", "settings"]],
 ];
 const MODES = ["off", "draft", "auto"];
@@ -261,6 +261,7 @@ async function pageDashboard() {
     metric(t("dash.status"), t("bot." + s.bot.state), s.bot.reason ? botHint(s.bot) : (s.llm ? t("dash.model") + ": " + s.llm.name + " · " + s.llm.model : t("dash.nomodel"))),
     metric(t("dash.servers"), String(s.guilds)), metric(t("dash.pending"), String(s.pending)), metric(t("dash.auto"), String(s.auto_today))];
   if (s.forum_configured) metrics.push(metric(t("dash.toreview"), String(s.forum_to_review)));
+  if (s.supporters) metrics.push(metric(t("dash.supporters"), String(s.supporters.claims), s.supporters.retries ? t("dash.supNote", { n: s.supporters.retries }) : null));
   return h("div", null,
     h("div", { class: "metrics" }, metrics),
     h("div", { class: "card" }, h("h2", null, t("dash.start")),
@@ -686,6 +687,226 @@ async function pageBotMsgs() {
   return h("div", null, h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, field(t("bm.place"), place)), h("div", { class: "grow" }, field(t("bm.paste"), link)), loadBtn)), out);
 }
 
+/* ---------- supporters (Afdian orders -> a Discord role) ---------- */
+async function pageSupporters() {
+  const ov = await api("GET", "/api/supporters/settings");
+  const s = ov.settings, gid = ov.guild.id;
+  let roles = { items: [], can_manage_roles: true, bot_top: null }, rolesOk = !!gid;
+  if (gid) { try { roles = await api("GET", "/api/guilds/" + gid + "/roles"); } catch (e) { rolesOk = false; } }
+  const guilds = await api("GET", "/api/guilds").catch(() => ({ items: [] }));
+  const channels = (guilds.items.find((g) => g.id === gid) || guilds.items[0] || { channels: [] }).channels;
+  const roleName = (id) => { const r = roles.items.find((x) => x.id === id); return r ? r.name : id; };
+  const roleOpts = (selected) => {
+    const opts = [h("option", { value: "" }, t("sup.roleNone"))];
+    if (selected && !roles.items.some((r) => r.id === selected)) opts.push(h("option", { value: selected }, selected));
+    roles.items.filter((r) => !r.managed).forEach((r) => opts.push(h("option", { value: r.id }, r.name + (r.assignable ? "" : " " + t("sup.notAssignable")))));
+    return opts;
+  };
+  const fixText = (role, kind, bot) => t("sup.fix." + kind, { role, bot: bot || (roles.bot_top && roles.bot_top.name) || "…" });
+  const warn = (text) => h("div", { class: "badge err warn-line" }, text);
+
+  /* notices about roles the bot could not hand out (kept by the server since the last restart) */
+  const issues = ov.issues.length ? h("div", { class: "card" }, h("h2", null, t("sup.issues")),
+    ov.issues.map((i) => warn(fixText(i.role_name, i.kind === "no_permission" ? "perm" : i.kind, i.bot_role)))) : null;
+
+  /* connection */
+  const enabled = h("input", { type: "checkbox", checked: s.enabled });
+  const uid = h("input", { type: "text", autocomplete: "off", value: s.afdian_user_id });
+  const tok = h("input", { type: "password", autocomplete: "off", placeholder: ov.token_set ? t("sup.tokenKeep") : "" });
+  const status = h("span", { class: "sub small-text" });
+  async function saveConnFields() {
+    if (tok.value.trim()) { await api("POST", "/api/supporters/token", { token: tok.value.trim() }); tok.value = ""; }
+    await api("PUT", "/api/supporters/settings", { enabled: enabled.checked, afdian_user_id: uid.value.trim() });
+  }
+  const saveConn = h("button", { class: "btn primary", onclick: async () => {
+    try { await saveConnFields(); toast(t("common.saved")); renderPage(); } catch (e) { fail(e); }
+  } }, t("common.save"));
+  const testBtn = h("button", { class: "btn", onclick: async () => {
+    testBtn.disabled = true; status.textContent = t("sup.testing");
+    try {
+      await saveConnFields();
+      const r = await api("POST", "/api/supporters/test", {});
+      status.textContent = r.ok ? t("sup.testOk") : t("sup.testFail", { e: r.error });
+      status.className = "small-text " + (r.ok ? "sub" : "err-line");
+    } catch (e) { status.textContent = ""; fail(e); } finally { testBtn.disabled = false; }
+  } }, t("sup.test"));
+  const connCard = h("div", { class: "card" }, h("h2", null, t("sup.conn")), h("div", { class: "sub small-text" }, t("sup.connWhat")),
+    h("a", { class: "small-text", href: ov.dev_url, target: "_blank", rel: "noopener noreferrer" }, t("sup.openDev")),
+    h("label", { class: "row gap-top" }, enabled, t("sup.enable")),
+    h("div", { class: "two" }, field(t("sup.userId"), uid), field(t("sup.token"), tok)),
+    h("div", { class: "row" }, h("span", { class: "badge" + (ov.token_set ? "" : " err") }, ov.token_set ? t("sup.tokenSet") : t("sup.tokenNot")),
+      h("span", { class: "sub small-text" }, t("sup.tokenNote"))),
+    ov.keyring ? null : h("div", { class: "badge err" }, t("sup.nokeyring", { v: "HEARBACK_AFDIAN_TOKEN" })),
+    h("div", { class: "row" }, saveConn, testBtn, status));
+
+  /* rules */
+  const roleSel = h("select", { value: s.role_id }, roleOpts(s.role_id));
+  const roleWarn = h("div", null);
+  const showRoleWarn = () => {
+    clear(roleWarn);
+    const r = roles.items.find((x) => x.id === roleSel.value);
+    if (r && !r.assignable) roleWarn.appendChild(warn(fixText(r.name, roles.can_manage_roles ? "hierarchy" : "perm")));
+    if (!rolesOk) roleWarn.appendChild(h("div", { class: "sub small-text" }, t("sup.rolesFail")));
+  };
+  roleSel.addEventListener("change", showRoleWarn); showRoleWarn();
+  const requireSel = h("select", { multiple: true, size: String(Math.min(6, Math.max(3, roles.items.length))) }, roles.items.filter((r) => !r.managed).map((r) => h("option", { value: r.id, selected: s.require_role_ids.includes(r.id) }, r.name)));
+  const minInp = h("input", { type: "text", inputmode: "decimal", value: s.min_amount === "0" ? "" : s.min_amount });
+  const lookupsInp = h("input", { type: "number", min: "1", max: "200", value: s.lookups_per_day });
+  const dmBox = h("input", { type: "checkbox", checked: s.dm_handling });
+  const plans = Object.entries(s.plan_roles).map(([p, r]) => ({ plan: p, role: r }));
+  const planBox = h("div", null);
+  const drawPlans = () => {
+    clear(planBox);
+    plans.forEach((row, i) => planBox.appendChild(h("div", { class: "row" },
+      h("input", { type: "text", value: row.plan, placeholder: t("sup.planId"), oninput: (e) => { row.plan = e.target.value.trim(); } }),
+      h("select", { value: row.role, onchange: (e) => { row.role = e.target.value; } }, roleOpts(row.role)),
+      h("button", { class: "icon-btn", title: t("common.delete"), onclick: () => { plans.splice(i, 1); drawPlans(); } }, trashIcon()))));
+  };
+  drawPlans();
+  const saveRules = h("button", { class: "btn primary", onclick: async () => {
+    const plan_roles = {};
+    for (const row of plans) if (row.plan && row.role) plan_roles[row.plan] = row.role;
+    try {
+      await api("PUT", "/api/supporters/settings", { role_id: roleSel.value, require_role_ids: Array.from(requireSel.selectedOptions).map((o) => o.value),
+        min_amount: minInp.value.trim(), plan_roles, lookups_per_day: +lookupsInp.value || 10, dm_handling: dmBox.checked });
+      toast(t("common.saved")); renderPage();
+    } catch (e) { fail(e); }
+  } }, t("common.save"));
+  const rulesCard = h("div", { class: "card" }, h("h2", null, t("sup.rules")),
+    field(t("sup.role"), roleSel), roleWarn,
+    fieldHint(t("sup.require"), requireSel, t("sup.requireHint")),
+    fieldHint(t("sup.minAmount"), minInp, t("sup.minHint")),
+    h("details", { class: "acc" }, h("summary", null, t("sup.plans")),
+      h("div", { class: "acc-body" }, h("div", { class: "sub small-text" }, t("sup.planHint")), planBox,
+        h("div", { class: "row" }, h("button", { class: "btn small", onclick: () => { plans.push({ plan: "", role: "" }); drawPlans(); } }, t("sup.planAdd"))),
+        field(t("sup.lookups"), lookupsInp))),
+    h("h3", { class: "gap-top" }, t("sup.dm")),
+    h("label", { class: "row" }, dmBox, t("sup.dmOn")),
+    h("div", { class: "badge err warn-line" }, t("sup.dmWarn")),
+    h("div", { class: "row end" }, saveRules));
+
+  /* who to tell */
+  const chanSel = h("select", { value: s.notify.channel_id }, h("option", { value: "" }, t("sup.notifyNone")),
+    channels.map((c) => h("option", { value: c.id }, "# " + c.name)));
+  const usersInp = h("input", { type: "text", inputmode: "numeric", autocomplete: "off", value: s.notify.user_ids.join(", ") });
+  const saveNotify = h("button", { class: "btn primary", onclick: async () => {
+    try {
+      await api("PUT", "/api/supporters/settings", { notify: { channel_id: chanSel.value, user_ids: usersInp.value.split(",").map((x) => x.trim()).filter(Boolean) } });
+      toast(t("common.saved")); renderPage();
+    } catch (e) { fail(e); }
+  } }, t("common.save"));
+  const notifyCard = h("div", { class: "card" }, h("h2", null, t("sup.notify")), h("div", { class: "sub small-text" }, t("sup.notifyHint")),
+    h("div", { class: "two" }, field(t("sup.notifyChannel"), chanSel), field(t("sup.notifyUsers"), usersInp)), h("div", { class: "row end" }, saveNotify));
+
+  /* simulate a DM: asks Afdian and Discord (reads only), changes nothing */
+  const simText = h("textarea", { placeholder: t("sup.simText") });
+  simText.rows = 3;
+  const simUser = h("input", { type: "text", inputmode: "numeric", autocomplete: "off" });
+  const simOut = h("div", null);
+  const simBtn = h("button", { class: "btn primary", onclick: async () => {
+    simBtn.disabled = true;
+    try {
+      const r = await api("POST", "/api/supporters/simulate", { text: simText.value, user_id: simUser.value.trim() });
+      clear(simOut);
+      if (r.no_order) { simOut.appendChild(h("div", { class: "sub" }, t("sup.simNoOrder"))); return; }
+      simOut.appendChild(h("div", { class: "lbl" }, t("sup.simReply")));
+      simOut.appendChild(h("div", { class: "preview" }, r.reply || "—"));
+      simOut.appendChild(h("div", { class: "lbl" }, t("sup.simRoles")));
+      simOut.appendChild(h("div", null, r.grant.length ? r.grant.map((g) => h("span", { class: "badge" }, g.name)) : h("span", { class: "muted" }, t("sup.simNoRoles"))));
+      if (r.notify.length) { simOut.appendChild(h("div", { class: "lbl" }, t("sup.simNotify"))); r.notify.forEach((n) => simOut.appendChild(h("div", { class: "preview" }, n))); }
+    } catch (e) { fail(e); } finally { simBtn.disabled = false; }
+  } }, t("sup.simGo"));
+  const simCard = h("div", { class: "card" }, h("h2", null, t("sup.sim")), h("div", { class: "sub small-text" }, t("sup.simHint")),
+    field(t("sup.simText"), simText), field(t("sup.simUser"), simUser), h("div", { class: "row" }, simBtn), simOut);
+
+  /* recent orders */
+  let showAmounts = false;
+  const ordersBox = h("div", null);
+  const amountsBox = h("input", { type: "checkbox", onchange: (e) => { showAmounts = e.target.checked; loadOrders(); } });
+  async function link(o, userId, name, ask) {
+    if (ask && !(await confirmBox(t("sup.claim.title"), t("sup.claim.confirm", { o: o.masked, n: name || userId }), t("sup.claim.go")))) return false;
+    try {
+      const r = await api("POST", "/api/supporters/link", { order: o.id, user_id: userId });
+      toast(r.failed.length ? t("sup.claim.partial") : t("sup.claim.done"), r.failed.length > 0); renderPage();
+    } catch (e) { fail(e); return false; }
+  }
+  function openClaim(o) {
+    const q = h("input", { type: "text", placeholder: t("sup.claim.search") });
+    const idInp = h("input", { type: "text", inputmode: "numeric", autocomplete: "off" });
+    const list = h("div", { class: "member-list" });
+    let timer = null;
+    async function search() {
+      clear(list);
+      if (!gid || !q.value.trim()) return;
+      try {
+        const r = await api("GET", "/api/guilds/" + gid + "/members?q=" + encodeURIComponent(q.value.trim()));
+        if (!r.items.length) list.appendChild(h("div", { class: "muted small-text" }, t("sup.claim.none")));
+        r.items.forEach((m) => list.appendChild(h("button", { class: "btn small", onclick: () => { idInp.value = m.id; clear(list).appendChild(h("div", { class: "small-text" }, t("sup.claim.pick", { n: m.display || m.username }))); } }, (m.display || m.username) + " · @" + m.username)));
+      } catch (e) { list.appendChild(h("div", { class: "muted small-text" }, hasKey("err." + e.message) ? t("err." + e.message) : e.message)); }
+    }
+    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 300); });
+    modal(t("sup.claim.title"), h("div", null, h("div", { class: "sub small-text" }, t("sup.claim.for", { o: o.masked })),
+      field(t("sup.claim.search"), q), list, field(t("sup.claim.id"), idInp)), [
+      { label: t("common.cancel") },
+      { label: t("sup.claim.go"), cls: "primary", run: async () => {
+        const v = idInp.value.trim();
+        if (!/^\d{1,20}$/.test(v)) { toast(t("sup.claim.badId"), true); return false; }
+        return link(o, v, "", false);
+      } }]);
+  }
+  function drawOrders(r) {
+    clear(ordersBox);
+    if (!r.items.length) { ordersBox.appendChild(h("div", { class: "muted pad" }, t("sup.noOrders"))); return; }
+    if (!r.members_available) ordersBox.appendChild(h("div", { class: "sub small-text" }, t("sup.noMembers")));
+    const head = h("tr", null, [t("sup.col.time"), t("sup.col.order"), t("sup.col.plan"), t("sup.col.amount"), t("sup.col.state")].map((x) => h("th", null, x)));
+    const rows = r.items.map((o) => h("tr", { class: o.suggestions.length && !o.claim ? "hl" : "" },
+      h("td", { class: "muted small-text" }, fmtTime(o.time) || "—"), h("td", null, h("code", null, o.masked)),
+      h("td", null, [o.plan_id, o.title].filter(Boolean).join(" · ") || "—"),
+      h("td", null, showAmounts ? (o.amount !== undefined ? o.amount : "—") : "•••"),
+      h("td", null, o.claim ? h("span", { class: "badge" }, t("sup.claimed") + " @" + (o.claim.user_name || o.claim.user_id))
+        : !o.paid ? h("span", { class: "badge idle" }, t("sup.unpaid"))
+        : h("div", null, h("span", { class: "badge idle" }, t("sup.unclaimed")), " ",
+            h("button", { class: "btn small", onclick: () => openClaim(o) }, t("sup.claimTo")),
+            o.suggestions.map((sg) => h("div", null, h("span", { class: "small-text" }, t("sup.suggest", { n: sg.name }) + " "),
+              h("button", { class: "btn small primary", onclick: () => link(o, sg.user_id, sg.name, true) }, t("sup.claimToName", { n: sg.name }))))))));
+    ordersBox.appendChild(h("table", null, h("thead", null, head), h("tbody", null, rows)));
+  }
+  async function loadOrders() {
+    clear(ordersBox).appendChild(h("div", { class: "muted pad" }, t("common.loading")));
+    try { drawOrders(await api("GET", "/api/supporters/orders" + (showAmounts ? "?amounts=1" : ""))); }
+    catch (e) { clear(ordersBox).appendChild(h("div", { class: "sub small-text pad" }, hasKey("err." + e.message) ? t("err." + e.message) : e.message)); }
+  }
+  const ordersCard = h("div", { class: "card" }, h("div", { class: "row" }, h("h2", { class: "grow" }, t("sup.orders")),
+    h("label", { class: "row" }, amountsBox, t("sup.showAmounts")), h("button", { class: "btn small", onclick: loadOrders }, t("common.refresh"))), ordersBox);
+
+  /* claimed orders */
+  const claimsBox = h("div", null);
+  async function revoke(c) {
+    const rm = h("input", { type: "checkbox", checked: true });
+    const ok = await new Promise((resolve) => modal(t("sup.revokeTitle"),
+      h("div", null, h("div", { class: "sub" }, t("sup.revokeText", { o: c.masked, n: c.user_name || c.user_id })), h("label", { class: "row gap-top" }, rm, t("sup.revokeRole"))),
+      [{ label: t("common.cancel"), run: () => { resolve(false); } }, { label: t("sup.revoke"), cls: "danger solid", run: () => { resolve(true); } }]));
+    if (!ok) return;
+    try { await api("POST", "/api/supporters/unlink", { order: c.order, remove_role: rm.checked }); toast(t("sup.revoked")); renderPage(); } catch (e) { fail(e); }
+  }
+  async function loadClaims() {
+    try {
+      const r = await api("GET", "/api/supporters/claims");
+      clear(claimsBox);
+      if (!r.items.length) { claimsBox.appendChild(h("div", { class: "muted pad" }, t("sup.claimsNone"))); return; }
+      claimsBox.appendChild(h("table", null, h("tbody", null, r.items.map((c) => h("tr", null,
+        h("td", null, "@" + (c.user_name || c.user_id)), h("td", null, h("code", null, c.masked)), h("td", { class: "muted small-text" }, fmtTime(c.at)),
+        h("td", { class: "small-text" }, c.plan_id || ""),
+        h("td", null, h("button", { class: "btn small danger", onclick: () => revoke(c) }, t("sup.revoke"))))))));
+    } catch (e) { clear(claimsBox); fail(e); }
+  }
+  const claimsCard = h("div", { class: "card" }, h("h2", null, t("sup.claims")), claimsBox);
+
+  loadClaims();
+  if (ov.token_set && s.afdian_user_id) loadOrders(); else clear(ordersBox).appendChild(h("div", { class: "sub small-text pad" }, t("err.afdian_not_set")));
+  return h("div", null, issues, connCard, rulesCard, notifyCard, simCard, ordersCard, claimsCard);
+}
+
 /* ---------- models ---------- */
 async function pageLLM() {
   let tab = "profiles";
@@ -873,7 +1094,7 @@ async function pageSettings() {
     h("div", { class: "card" }, h("div", { class: "kv" }, t("set.port") + ": " + s.port)));
 }
 
-const PAGES = { dashboard: pageDashboard, conversations: pageConversations, approvals: pageApprovals, forum: pageForum, botmsgs: pageBotMsgs, llm: pageLLM, agents: pageAgents, rules: pageRules, logs: pageLogs, settings: pageSettings };
+const PAGES = { dashboard: pageDashboard, conversations: pageConversations, approvals: pageApprovals, forum: pageForum, botmsgs: pageBotMsgs, supporters: pageSupporters, llm: pageLLM, agents: pageAgents, rules: pageRules, logs: pageLogs, settings: pageSettings };
 
 /* ---------- boot ---------- */
 function boot() {

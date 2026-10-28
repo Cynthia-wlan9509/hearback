@@ -26,6 +26,8 @@ hearback demo --lang zh
 - SWLink (web console + chat bot, DESIGN 3.10): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
   `agents.py` system-prompt agents; `review.py` AI review of forum threads (`triage.ai`, fix list, background job); `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
   `web/server.py` loopback JSON API + static page; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
+- SWLink supporters (DESIGN 3.10, Afdian orders to a Discord role): `supporters.py` Afdian client, `supporters.json` store,
+  `Supporters.handle_order` brain, `SupporterBot` (REST role grants, DM replies, retry loop); tests use `FakeAfdian` in `fake.py`
 
 ## Rules
 - Tests never touch the network. Use `FakeDiscord` (fixtures in `tests/conftest.py`: `env`, `seeded`, `cli_ws`).
@@ -41,7 +43,8 @@ hearback demo --lang zh
 - Core imports stdlib only; optional extras (`mcp`, `pillow`, `anthropic`, `openai`, `discord.py`, `keyring`) are imported inside functions.
 - SWLink: the web console is a human tool (writes use `human:web`; the bot's own drafts are `agent:swlink` proposals). API keys
   and the bot token are write-only: never in files other than the keyring / token file, never in responses, logs or events.
-  Tests use fake providers and an in-process server on port 0.
+  The Afdian token follows the same rule (keyring or `HEARBACK_AFDIAN_TOKEN`); amounts never go into replies, notices or
+  events, and order numbers are masked there. Tests use fake providers and an in-process server on port 0.
 - Keep CLI and tool output compact: agents read it.
 - No project-specific names, ids or paths anywhere (`tests/test_hygiene.py` scans every text file).
 - LF line endings, type hints, short docstrings, English messages.

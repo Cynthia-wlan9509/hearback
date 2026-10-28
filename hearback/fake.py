@@ -12,14 +12,16 @@ enforces the Discord limits that matter (2000 characters, 5 tags, 100-character 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import mimetypes
 import re
 import struct
+import time
 import urllib.parse
 import zlib
 from collections import deque
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 from hearback.discord import API_BASE, DiscordClient, DownloadTooLarge
 from hearback.util import make_snowflake
@@ -32,6 +34,7 @@ class Call(NamedTuple):
     path: str
     params: dict
     body: Any
+    reason: str = ""          # the decoded X-Audit-Log-Reason header, when the request carried one
 
 
 class _HTTP(Exception):
@@ -91,6 +94,10 @@ class FakeDiscord:
         self.bot = self._user("Hearback Bot", bot=True)
         self.users: dict[str, dict] = {self.bot["id"]: self.bot}
         self.guild_id = self.new_id()
+        self.roles: dict[str, dict] = {self.guild_id: {"id": self.guild_id, "name": "@everyone", "position": 0,
+                                                       "managed": False, "permissions": "0"}}
+        self.members: dict[str, dict] = {self.bot["id"]: {"user": self.bot, "nick": None, "roles": []}}
+        self.dms: dict[str, str] = {}         # user id -> DM channel id
         self.channels: dict[str, dict] = {}
         self.messages: dict[str, list[dict]] = {}
         self.blobs: dict[str, bytes] = {}
@@ -139,6 +146,26 @@ class FakeDiscord:
         self.channels[cid] = {"id": cid, "type": 0, "name": name, "guild_id": self.guild_id}
         self.messages[cid] = []
         return cid
+
+    def add_role(self, name: str, position: int | None = None, managed: bool = False, permissions: int = 0) -> str:
+        rid = self.new_id()
+        pos = position if position is not None else 1 + max(r["position"] for r in self.roles.values())
+        self.roles[rid] = {"id": rid, "name": name, "position": pos, "managed": managed,
+                           "permissions": str(permissions)}
+        return rid
+
+    def add_member(self, user: str | dict, roles: Sequence[str] = (), nick: str | None = None) -> dict:
+        """Put a person into the guild with the given role ids; returns the user object."""
+        u = self.add_user(user) if isinstance(user, str) else user
+        self.users.setdefault(u["id"], u)
+        self.members[u["id"]] = {"user": u, "nick": nick, "roles": [str(r) for r in roles]}
+        return u
+
+    def give_bot_role(self, position: int = 10, manage_roles: bool = True, name: str = "Hearback") -> str:
+        """Give the bot member one role at `position` (with or without Manage Roles); returns its id."""
+        rid = self.add_role(name, position, permissions=(1 << 28) if manage_roles else 0)
+        self.members[self.bot["id"]]["roles"].append(rid)
+        return rid
 
     def tag_id(self, forum_id: str, name: str) -> str:
         return next(t["id"] for t in self.channels[forum_id]["available_tags"] if t["name"] == name)
@@ -245,7 +272,8 @@ class FakeDiscord:
                 body, files = parse_multipart(ctype, data)
             else:
                 body = json.loads(data.decode("utf-8"))
-        self.calls.append(Call(method, path, params, body))
+        reason = urllib.parse.unquote(next((v for k, v in headers.items() if k.lower() == "x-audit-log-reason"), ""))
+        self.calls.append(Call(method, path, params, body, reason))
         auth = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
         try:
             if auth != "Bot " + self.token:
@@ -274,7 +302,7 @@ class FakeDiscord:
         if method == "GET" and m:
             if m.group(1) != self.guild_id:
                 raise _HTTP(404, "Unknown Guild", 10004)
-            return [c for c in self.channels.values() if c["type"] != 11]
+            return [c for c in self.channels.values() if c["type"] not in (1, 11)]
         m = re.fullmatch(r"/guilds/(\d+)/threads/active", path)
         if method == "GET" and m:
             return {"threads": [t for t in self.channels.values()
@@ -322,6 +350,31 @@ class FakeDiscord:
                 if th["type"] == 11:   # like Discord: message_count drops, last_message_id and total_message_sent do not
                     th["message_count"] = max(len(self.messages[cid]) - 1, 0)
                 return None
+        if method == "POST" and path == "/users/@me/channels":
+            return self._open_dm(str((body or {}).get("recipient_id", "")))
+        m = re.fullmatch(r"/guilds/(\d+)/roles", path)
+        if method == "GET" and m:
+            self._guild(m.group(1))
+            return sorted(self.roles.values(), key=lambda r: r["position"], reverse=True)
+        m = re.fullmatch(r"/guilds/(\d+)/members/search", path)
+        if method == "GET" and m:
+            self._guild(m.group(1))
+            q = params.get("query", "").lower()
+            hits = [mm for mm in self.members.values()
+                    if q in " ".join([mm["user"]["username"], mm["user"].get("global_name") or "", mm["nick"] or ""]).lower()]
+            return hits[: int(params.get("limit", 1))]
+        m = re.fullmatch(r"/guilds/(\d+)/members", path)
+        if method == "GET" and m:
+            self._guild(m.group(1))
+            return list(self.members.values())[: int(params.get("limit", 1))]
+        m = re.fullmatch(r"/guilds/(\d+)/members/(\d+)", path)
+        if method == "GET" and m:
+            self._guild(m.group(1))
+            return self._member(m.group(2))
+        m = re.fullmatch(r"/guilds/(\d+)/members/(\d+)/roles/(\d+)", path)
+        if method in ("PUT", "DELETE") and m:
+            self._guild(m.group(1))
+            return self._set_role(method, m.group(2), m.group(3))
         m = re.fullmatch(r"/channels/(\d+)/messages/(\d+)/reactions/(.+)/@me", path)
         if method == "PUT" and m:
             if self.message(m.group(1), m.group(2)) is None:
@@ -342,6 +395,43 @@ class FakeDiscord:
             if method == "PATCH":
                 return self._patch_channel(ch, body or {})
         raise AssertionError("FakeDiscord does not implement: %s %s" % (method, path))
+
+    def _guild(self, gid: str) -> None:
+        if gid != self.guild_id:
+            raise _HTTP(404, "Unknown Guild", 10004)
+
+    def _member(self, uid: str) -> dict:
+        if uid not in self.members:
+            raise _HTTP(404, "Unknown Member", 10007)
+        return self.members[uid]
+
+    def _open_dm(self, uid: str) -> dict:
+        if uid not in self.users:
+            raise _HTTP(404, "Unknown User", 10013)
+        if uid not in self.dms:
+            cid = self.new_id()
+            self.channels[cid] = {"id": cid, "type": 1, "recipients": [self.users[uid]]}
+            self.messages[cid] = []
+            self.dms[uid] = cid
+        return self.channels[self.dms[uid]]
+
+    def _set_role(self, method: str, uid: str, rid: str) -> None:
+        member = self._member(uid)
+        if rid not in self.roles:
+            raise _HTTP(404, "Unknown Role", 10011)
+        mine = [self.roles[r] for r in self.members[self.bot["id"]]["roles"] if r in self.roles]
+        perms = 0
+        for r in mine + [self.roles[self.guild_id]]:
+            perms |= int(r["permissions"])
+        top = max([r["position"] for r in mine], default=0)
+        role = self.roles[rid]
+        if not perms & ((1 << 28) | (1 << 3)) or role["position"] >= top or role["managed"]:
+            raise _HTTP(403, "Missing Permissions", 50013)
+        if method == "PUT" and rid not in member["roles"]:
+            member["roles"].append(rid)
+        if method == "DELETE" and rid in member["roles"]:
+            member["roles"].remove(rid)
+        return None
 
     def _channel(self, cid: str) -> dict:
         if cid not in self.channels:
@@ -390,3 +480,113 @@ class FakeDiscord:
         if "archived" in body:
             self.set_archived(ch["id"], bool(body["archived"]))
         return ch
+
+
+# ---------------------------------------------------------------- Afdian
+
+class _Reply:
+    """What `urllib.request.urlopen` returns, reduced to what the Afdian client reads."""
+
+    def __init__(self, raw: bytes):
+        self.raw = raw
+
+    def read(self) -> bytes:
+        return self.raw
+
+    def __enter__(self) -> "_Reply":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+class FakeAfdian:
+    """In-memory Afdian open API, used as the client's `opener`. It checks the signature and the timestamp the way
+    the real service documents it, and serves `ping`, `query-order` (50 per page, comma-separated out_trade_no)
+    and `query-sponsor` (20 per page).
+
+        afdian = FakeAfdian()
+        order = afdian.add_order(total_amount="12.50", plan_id="plan-a")
+        client = AfdianClient(afdian.user_id, afdian.token, opener=afdian)
+    """
+
+    BASE = "https://afdian.com/api/open/"
+    ORDER_PAGE, SPONSOR_PAGE, SKEW = 50, 20, 3600
+
+    def __init__(self, user_id: str = "fake-afdian-user", token: str = "fake-afdian-token",
+                 clock: Callable[[], float] = time.time):
+        self.user_id, self.token, self.clock = user_id, token, clock
+        self.orders: list[dict] = []
+        self.sponsors: list[dict] = []
+        self.calls: list[tuple[str, dict]] = []
+        self.urls: list[str] = []
+        self.faults: deque[Any] = deque()
+        self._seq = 0
+
+    def add_order(self, out_trade_no: str | None = None, plan_id: str = "", total_amount: str = "5.00",
+                  status: int = 2, remark: str = "", title: str = "", month: int = 1, **extra: Any) -> dict:
+        self._seq += 1
+        o = {"out_trade_no": out_trade_no or "20261024%019d" % self._seq, "user_id": "afdian-user-%d" % self._seq,
+             "user_private_id": "private-%d" % self._seq, "plan_id": plan_id, "title": title, "month": month,
+             "total_amount": total_amount, "show_amount": total_amount, "status": status, "remark": remark,
+             "redeem_id": "", "product_type": 0, "discount": "0.00", "sku_detail": [], **extra}
+        self.orders.insert(0, o)                 # newest first, like the real list
+        return o
+
+    def fail_next(self, fault: Any) -> None:
+        """Queue one failure: an exception to raise, or a dict to return as the whole response body."""
+        self.faults.append(fault)
+
+    def sign_of(self, params: str, ts: int, user_id: str) -> str:
+        return hashlib.md5(("%sparams%sts%suser_id%s" % (self.token, params, ts, user_id)).encode("utf-8")).hexdigest()
+
+    def __call__(self, req: Any, timeout: float | None = None) -> _Reply:
+        url = req.full_url
+        self.urls.append(url)
+        if not url.startswith(self.BASE):
+            raise AssertionError("the Afdian client talked to %s" % url)
+        name = url[len(self.BASE):]
+        if self.faults:
+            f = self.faults.popleft()
+            if isinstance(f, BaseException):
+                raise f
+            return _Reply(json.dumps(f).encode("utf-8"))
+        body = json.loads(req.data.decode("utf-8"))
+        return _Reply(json.dumps(self._answer(name, body)).encode("utf-8"))
+
+    def _answer(self, name: str, body: dict) -> dict:
+        def err(ec: int, em: str, data: dict | None = None) -> dict:
+            return {"ec": ec, "em": em, "data": data or {}}
+
+        user_id, params, ts, sign = body.get("user_id"), body.get("params"), body.get("ts"), body.get("sign")
+        if None in (user_id, params, ts, sign):
+            return err(400001, "params incomplete")
+        if abs(self.clock() - int(ts)) > self.SKEW:
+            return err(400002, "time was expired", {"explain": "ts is outdated, 3600s latency was allowed"})
+        try:
+            p = json.loads(params)
+        except ValueError:
+            return err(400003, "params was not valid json string")
+        if user_id != self.user_id:
+            return err(400004, "no valid token found")
+        if sign != self.sign_of(params, int(ts), user_id):
+            return err(400005, "sign validation failed",
+                       {"explain": "plz check the desc", "debug": {"kv_string": "params%sts%suser_id%s" % (params, ts, user_id)}})
+        self.calls.append((name, p))
+        if name == "ping":
+            return err(200, "pong")
+        if name == "query-order":
+            rows = self.orders
+            if p.get("out_trade_no"):
+                want = set(str(p["out_trade_no"]).split(","))
+                rows = [o for o in rows if o["out_trade_no"] in want]
+            return self._page(rows, int(p.get("page") or 1), self.ORDER_PAGE)
+        if name == "query-sponsor":
+            return self._page(self.sponsors, int(p.get("page") or 1), self.SPONSOR_PAGE)
+        return err(404, "not found")
+
+    @staticmethod
+    def _page(rows: list[dict], page: int, size: int) -> dict:
+        total_page = max(1, -(-len(rows) // size))
+        return {"ec": 200, "em": "ok", "data": {"list": rows[(page - 1) * size: page * size],
+                                                 "total_count": len(rows), "total_page": total_page}}

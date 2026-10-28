@@ -75,6 +75,59 @@ EN: dict[str, str] = {
         "A maintainer triages your post, merges duplicates and tags it. When the fix ships you get a "
         "reply in your own thread telling you which build has it and how to update."
     ),
+    "supporter_ok": "Thank you for your support! Your order is confirmed and you now have the supporter role.",
+    "supporter_ok_again": "Thanks again! This order is confirmed and you already have the supporter role.",
+    "supporter_claimed_by_other": (
+        "That order number has already been used by someone else, so it cannot be used again. "
+        "If you think this is a mistake, please contact the server owner."
+    ),
+    "supporter_need_verify_first": "Please finish the server's verification first, then send me the order number again.",
+    "supporter_not_found": (
+        "I could not find a paid order with that number yet. Please check the number. "
+        "A new order can take a few minutes to show up, so you can also try again shortly."
+    ),
+    "supporter_below_min": (
+        "Thank you! This order does not reach the amount needed for the supporter role, so I cannot give it for "
+        "this one. The server owner has been told in case something is off."
+    ),
+    "supporter_limit": "You have checked quite a few numbers today. Please try again tomorrow, or contact the server owner.",
+    "supporter_retry_later": (
+        "Afdian is not answering right now. I saved your order number and will try again automatically. "
+        "You will get a message here when it is done."
+    ),
+    "supporter_gave_up": (
+        "I still could not reach Afdian for your order, so I stopped trying. "
+        "The server owner has been told and will check it by hand."
+    ),
+    "supporter_off": "Supporter checks are not set up yet. The server owner has been told.",
+    "supporter_not_member": (
+        "I cannot find you in the server, so I cannot give you a role. "
+        "Please join the server first, then send me the number again."
+    ),
+    "supporter_grant_failed": (
+        "Your order is confirmed, but I could not hand out the role just now. The server owner has been told. "
+        "Send the number again later and it will be given."
+    ),
+    "supporter_note_claimed": "[SWLink] $who linked order $order and received the supporter role.",
+    "supporter_note_claimed_had": "[SWLink] $who linked order $order. They already had the supporter role.",
+    "supporter_note_other": "[SWLink] $who sent order $order, but it is already linked to $first.",
+    "supporter_note_below_min": "[SWLink] $who sent order $order, which is below your minimum amount. No role was given.",
+    "supporter_note_retry": (
+        "[SWLink] Afdian could not be checked ($error). $who's order $order will be retried every 10 minutes."
+    ),
+    "supporter_note_gave_up": "[SWLink] Afdian could not be reached for 3 days. Please check $who's order $order by hand.",
+    "supporter_note_off": (
+        "[SWLink] $who sent order $order, but supporter checks are not set up yet (see the Supporters page)."
+    ),
+    "supporter_note_hierarchy": (
+        "[SWLink] Could not give the role $role to $who. In Server Settings > Roles, drag the bot's role above $role."
+    ),
+    "supporter_note_no_permission": (
+        "[SWLink] Could not give the role $role to $who: the bot has no Manage Roles permission. "
+        "Turn it on for the bot's role in Server Settings > Roles."
+    ),
+    "supporter_note_grant_failed": "[SWLink] Could not give the role $role to $who: $error",
+    "supporter_note_left": "[SWLink] $who left the server before order $order could be checked. That check was dropped.",
 }
 
 ZH: dict[str, str] = {
@@ -128,6 +181,35 @@ ZH: dict[str, str] = {
         "维护者会分诊你的帖子、合并重复问题并打标签。修复发布后，你会在自己的帖子里收到回复，"
         "告诉你哪个版本已修复、怎么更新。"
     ),
+    "supporter_ok": "谢谢你的支持！订单已确认，支持者身份组已经加上了。",
+    "supporter_ok_again": "再次感谢！这笔订单已确认，你已经有支持者身份组了。",
+    "supporter_claimed_by_other": "这个订单号已经被别人用过了，不能再用。如果你觉得不对，请联系群主。",
+    "supporter_need_verify_first": "请先完成群里的验证，再把订单号发给我。",
+    "supporter_not_found": (
+        "暂时没查到这个订单号对应的已付款订单。请检查一下号码有没有发错；"
+        "刚付款的订单可能要几分钟才查得到，可以过一会儿再发一次。"
+    ),
+    "supporter_below_min": "谢谢你！这笔订单没有达到领取支持者身份组的金额，这次没法给。已经告诉群主了，如果有问题会联系你。",
+    "supporter_limit": "你今天查的次数有点多，请明天再试，或者直接联系群主。",
+    "supporter_retry_later": "爱发电现在连不上。我记下了你的订单号，会自动重试，有结果会在这里告诉你。",
+    "supporter_gave_up": "我一直连不上爱发电，已经不再自动重试了。已经告诉群主，会有人手动帮你核对。",
+    "supporter_off": "支持者核对还没设置好，已经告诉群主了。",
+    "supporter_not_member": "我在群里找不到你，没法给身份组。请先加入群，再把订单号发给我。",
+    "supporter_grant_failed": "订单已确认，但身份组这会儿没能加上，已经告诉群主了。稍后把订单号再发一次就会补上。",
+    "supporter_note_claimed": "[SWLink] $who 认领了订单 $order，已给支持者身份组。",
+    "supporter_note_claimed_had": "[SWLink] $who 认领了订单 $order。对方原来就有支持者身份组。",
+    "supporter_note_other": "[SWLink] $who 发来订单 $order，但它已经被 $first 用过了。",
+    "supporter_note_below_min": "[SWLink] $who 发来订单 $order，低于你设的最低金额，没有给身份组。",
+    "supporter_note_retry": "[SWLink] 爱发电查不了（$error）。$who 的订单 $order 会每 10 分钟自动重查。",
+    "supporter_note_gave_up": "[SWLink] 爱发电连续 3 天都没查成。请人工核对 $who 的订单 $order。",
+    "supporter_note_off": "[SWLink] $who 发来订单 $order，但支持者核对还没设置好（见「支持者」页面）。",
+    "supporter_note_hierarchy": "[SWLink] 没能把身份组 $role 给 $who。到服务器设置 > 身份组，把机器人的身份组拖到 $role 上面。",
+    "supporter_note_no_permission": (
+        "[SWLink] 没能把身份组 $role 给 $who：机器人没有「管理身份组」权限。"
+        "到服务器设置 > 身份组，给机器人的身份组打开它。"
+    ),
+    "supporter_note_grant_failed": "[SWLink] 没能把身份组 $role 给 $who：$error",
+    "supporter_note_left": "[SWLink] $who 在订单 $order 查完之前离开了服务器，这次核对已取消。",
 }
 
 BUILTIN = {"en": EN, "zh": ZH}

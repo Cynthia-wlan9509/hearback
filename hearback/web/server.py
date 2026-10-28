@@ -8,6 +8,7 @@ this module contains them. Writes made from the page use the actor `human:web`.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hmac
 import json
 import os
@@ -31,6 +32,8 @@ from hearback.ledger import STATUSES, Ledger
 from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
                           scrub_obj)
 from hearback.queue import Queue
+from hearback.supporters import (Person, SupporterBot, SupporterError, Supporters, SupporterStore, check_id,
+                                 check_order_no, clean_settings, mask, match_remarks)
 from hearback.sync import format_delta, sync as run_sync
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
 
@@ -53,6 +56,9 @@ REVIEW_LIMIT = 15                 # threads per AI review run unless the page as
 ADOPT_FIELDS = ("status", "cluster", "root_cause", "fix")
 PROPOSE_WHY = "AI review draft, edited by a human"
 DETAIL_REPLIES = 30
+AFDIAN_DEV_URL = "https://afdian.com/dashboard/dev"
+MEMBER_LIST_LIMIT = 1000          # the most members one REST call returns; used for remark suggestions
+MEMBER_CACHE_S = 60
 
 
 def _names(v: Any) -> list[str]:
@@ -60,6 +66,20 @@ def _names(v: Any) -> list[str]:
     if isinstance(v, str):
         v = v.split(",")
     return list(dict.fromkeys(str(x).strip() for x in v if str(x).strip())) if isinstance(v, list) else []
+
+
+def _member_view(m: dict) -> dict:
+    u = m.get("user") or {}
+    return {"id": str(u.get("id", "")), "username": str(u.get("username") or ""),
+            "display": str(m.get("nick") or u.get("global_name") or u.get("username") or "")}
+
+
+def _order_time(o: dict) -> str:
+    """An order's creation time as ISO text when Afdian sent a Unix timestamp, else empty."""
+    try:
+        return dt.datetime.fromtimestamp(float(o.get("create_time")), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
 
 
 class ApiError(Exception):
@@ -80,7 +100,8 @@ class App:
 
     def __init__(self, cfg: Config, *, client_factory: Callable[[], DiscordClient] | None = None,
                  llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, supporters_store: SupporterStore | None = None,
+                 afdian_opener: Callable[..., Any] | None = None):
         self.cfg = cfg
         self.secret = secret or secrets.token_urlsafe(24)
         self.port = 0
@@ -96,6 +117,11 @@ class App:
         self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message)
+        self.supporters_store = supporters_store or SupporterStore(cfg.data_dir)
+        self.supporters = Supporters(self.supporters_store, ledger=self.ledger, clock=clock, lang=cfg.language,
+                                     templates_dir=cfg.templates_dir, opener=afdian_opener)
+        self.supporter_bot = SupporterBot(self.supporters, self._client_factory, self._supporter_guild, self._plain_bot_id)
+        self._members_cache: tuple[float, list[dict]] | None = None
         self._dir_cache: tuple[float, list[dict], str] | None = None
         self._bot_id = self._bot_name = ""
         self.routes = self._build_routes()
@@ -134,6 +160,13 @@ class App:
     def bot_id(self) -> str:
         return self._bot_me()[0]
 
+    def _plain_bot_id(self) -> str:
+        """bot_id() for code outside the HTTP layer: a missing token is a HearbackError there, not an ApiError."""
+        try:
+            return self.bot_id()
+        except ApiError as e:
+            raise HearbackError(e.message) from None
+
     def _llm_call(self, agent: dict, system: str, messages: list[dict]) -> str:
         return complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)[0]
 
@@ -150,7 +183,11 @@ class App:
         return actions.post(self.client(), self.ledger, channel, text)["message_ids"]
 
     def on_message(self, msg: Message, bot_id: str) -> None:
-        """Gateway callback (runs in a worker thread)."""
+        """Gateway callback (runs in a worker thread). A DM with an Afdian order number goes to the supporter flow
+        (fixed template replies, no model) when that is switched on; everything else follows the channel rules."""
+        if (msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id
+                and self.supporter_bot.handle_dm(msg.author_id, msg.channel_id, msg.content)):
+            return
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
             self.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
@@ -238,6 +275,17 @@ class App:
         add("GET", "/api/botmsgs", self.api_botmsgs)
         add("PUT", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_edit)
         add("DELETE", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_delete)
+        add("GET", "/api/supporters/settings", self.api_sup_settings)
+        add("PUT", "/api/supporters/settings", self.api_sup_settings_put)
+        add("POST", "/api/supporters/token", self.api_sup_token)
+        add("POST", "/api/supporters/test", self.api_sup_test)
+        add("GET", "/api/supporters/orders", self.api_sup_orders)
+        add("GET", "/api/supporters/claims", self.api_sup_claims)
+        add("POST", "/api/supporters/link", self.api_sup_link)
+        add("POST", "/api/supporters/unlink", self.api_sup_unlink)
+        add("POST", "/api/supporters/simulate", self.api_sup_simulate)
+        add("GET", "/api/guilds/(\\d+)/roles", self.api_guild_roles)
+        add("GET", "/api/guilds/(\\d+)/members", self.api_guild_members)
         add("GET", "/api/logs", self.api_logs)
         add("GET", "/api/settings", self.api_settings)
         add("PUT", "/api/settings/token", self.api_token)
@@ -265,13 +313,18 @@ class App:
         tok = self.token_state()
         active = self.llm.active_public()
         llm_ready = any(p["key_set"] for p in self.llm.list_public())
+        try:
+            sup = self.supporters.summary()
+            supporters = {"claims": sup["claims"], "retries": sup["retries"]} if sup["enabled"] else None
+        except SupporterError:
+            supporters = {"claims": 0, "retries": 0, "damaged": True}
         return 200, {
             "version": __version__, "bot": st, "guilds": len(guilds),
             "pending": len(self.queue.list("pending")), "auto_today": self.bot.auto_today(),
             "forum_threads": len(self.ledger.load()["threads"]), "forum_configured": bool(self.cfg.forum_id),
             "forum_to_review": len(review.pending_threads(self.ledger.load())) if self.cfg.forum_id else 0,
             "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
-            "token_set": tok["set"],
+            "token_set": tok["set"], "supporters": supporters,
             "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
 
     def api_bot_start(self, q: Request) -> tuple[int, Any]:
@@ -621,6 +674,186 @@ class App:
         editor.remove_message(self.client(), self.ledger, channel, msg, ACTOR)
         return 200, {"deleted": message}
 
+    # ---- supporters (Afdian orders -> a Discord role)
+    def _supporter_guild(self) -> str:
+        """The server the supporter role lives in: the configured one, else the only one the bot is in."""
+        if self.cfg.guild_id:
+            return self.cfg.guild_id
+        guilds, _reason = self.directory()
+        return str(guilds[0]["id"]) if len(guilds) == 1 else ""
+
+    def _sup_overview(self) -> dict:
+        store = self.supporters_store
+        cfg = store.load()
+        guild = self._supporter_guild()
+        known = self._dir_cache[1] if self._dir_cache else self.runtime.guilds()
+        return {"settings": store.public(cfg), "token_set": store.has_token(), "keyring": store.keyring_available(),
+                "guild": {"id": guild, "name": next((g["name"] for g in known if str(g["id"]) == guild), "")},
+                "issues": self.supporter_bot.issues_view(),
+                "counts": {"claims": len(cfg["claims"]), "retries": len(cfg["retry"])}, "dev_url": AFDIAN_DEV_URL}
+
+    def api_sup_settings(self, q: Request) -> tuple[int, Any]:
+        return 200, self._sup_overview()
+
+    def api_sup_settings_put(self, q: Request) -> tuple[int, Any]:
+        store = self.supporters_store
+        with store.lock:
+            cfg = store.load()
+            new = clean_settings(q.body, cfg)
+            if new["enabled"] and new["dm_handling"] and not (new["role_id"] and new["afdian_user_id"] and store.has_token()):
+                raise ApiError(400, "dm_needs_setup")
+            cfg.update(new)
+            store.save(cfg)
+        self.ledger.event(ACTOR, "supporters_settings", None, {"fields": sorted(q.body)})
+        return 200, self._sup_overview()
+
+    def api_sup_token(self, q: Request) -> tuple[int, Any]:
+        self.supporters_store.set_token(str(q.body.get("token") or ""))
+        self.ledger.event(ACTOR, "supporters_token_update", None, None)
+        return 200, {"token_set": True}
+
+    def _afdian(self) -> Any:
+        client = self.supporters.make_client()
+        if client is None:
+            raise ApiError(400, "afdian_not_set")
+        return client
+
+    def api_sup_test(self, q: Request) -> tuple[int, Any]:
+        client = self._afdian()
+        try:
+            client.ping()
+        except SupporterError as e:
+            return 200, {"ok": False, "error": scrub(str(e))}
+        return 200, {"ok": True}
+
+    def _guild_members(self) -> tuple[list[dict], bool]:
+        """Humans in the server as {id, username, display}, cached briefly. ([], False) when Discord will not say."""
+        now = self.clock()
+        if self._members_cache and now - self._members_cache[0] < MEMBER_CACHE_S:
+            return self._members_cache[1], True
+        guild = self._supporter_guild()
+        if not guild:
+            return [], False
+        try:
+            raw = self.client().request("GET", "/guilds/%s/members" % guild, {"limit": MEMBER_LIST_LIMIT})
+        except (ApiError, HearbackError):
+            return [], False
+        members = [_member_view(m) for m in raw if not (m.get("user") or {}).get("bot")]
+        self._members_cache = (now, members)
+        return members, True
+
+    def api_sup_orders(self, q: Request) -> tuple[int, Any]:
+        amounts = q.query.get("amounts") == "1"
+        orders = self._afdian().recent_orders(pages=1)
+        claims = self.supporters_store.load()["claims"]
+        members, members_ok = self._guild_members()
+        suggest: dict[str, list[dict]] = {}
+        for s in match_remarks(orders, members, claimed=claims):
+            suggest.setdefault(s["order"], []).append({"user_id": s["user_id"], "name": s["name"], "match": s["match"]})
+        items = []
+        for o in orders:
+            no = str(o.get("out_trade_no") or "")
+            c = claims.get(no)
+            item = {"id": no, "masked": mask(no), "time": _order_time(o), "plan_id": str(o.get("plan_id") or ""),
+                    "title": str(o.get("title") or ""), "paid": str(o.get("status")) == "2",
+                    "claim": {"user_id": str(c.get("user_id")), "user_name": str(c.get("user_name") or ""),
+                              "at": str(c.get("at") or "")} if c else None,
+                    "suggestions": suggest.get(no, [])}
+            if amounts:
+                item["amount"] = str(o.get("total_amount") or "")
+            items.append(item)
+        return 200, {"items": items, "members_available": members_ok}
+
+    def api_sup_claims(self, q: Request) -> tuple[int, Any]:
+        return 200, {"items": self.supporters.claims_view(q.query.get("amounts") == "1")}
+
+    def api_sup_link(self, q: Request) -> tuple[int, Any]:
+        no, uid = check_order_no(q.body.get("order")), check_id(q.body.get("user_id"), "user_id")
+        guild = self._supporter_guild()
+        if not guild:
+            raise ApiError(400, "no_guild")
+        client = self.client()
+        person = self.supporter_bot.member(client, guild, uid)
+        if person is None:
+            raise ApiError(400, "not_member")
+        order, lookup = None, "skipped"
+        afd = self.supporters.make_client()
+        if afd is not None:
+            try:
+                order, lookup = afd.find_order(no), "ok"
+            except SupporterError:
+                lookup = "failed"
+            if lookup == "ok" and (order is None or str(order.get("status")) != "2"):
+                raise ApiError(400, "order_not_found")
+        claim = self.supporters.link_order(no, uid, ACTOR, user_name=person.name, order=order)
+        roles = self.supporters.roles_for(self.supporters_store.load(), claim.get("plan_id"))
+        done, failed = self.supporter_bot.grant(client, guild, uid, [r for r in roles if r not in person.role_ids],
+                                                actor=ACTOR)
+        shown = {k: v for k, v in claim.items() if k != "amount"}          # amounts stay out unless asked for
+        return 200, {"claim": {**shown, "order": no, "masked": mask(no)}, "granted": done, "lookup": lookup,
+                     "failed": [{"kind": f["kind"], "role_name": f["role_name"], "bot_role": f.get("bot_role", "")}
+                                for f in failed]}
+
+    def api_sup_unlink(self, q: Request) -> tuple[int, Any]:
+        claim = self.supporters.unlink(q.body.get("order"), ACTOR)
+        removed: list[str] = []
+        failed: list[str] = []
+        if q.body.get("remove_role") is True:
+            roles = self.supporters.roles_to_remove(claim)
+            guild = self._supporter_guild()
+            if roles and guild:
+                removed, failed = self.supporter_bot.remove(self.client(), guild, str(claim["user_id"]), roles, actor=ACTOR)
+        return 200, {"unlinked": mask(claim["order"]), "removed_roles": removed, "failed_roles": failed}
+
+    def api_sup_simulate(self, q: Request) -> tuple[int, Any]:
+        """Dry run of a supporter DM. It asks Afdian and Discord (reads only) and writes nothing anywhere."""
+        cfg = self.supporters_store.load()
+        uid = str(q.body.get("user_id") or "").strip()
+        person = Person(id="0", name="simulated", display="Simulated member", role_ids=set(cfg["require_role_ids"]))
+        assumed = not uid
+        client = None
+        guild = self._supporter_guild()
+        if uid:
+            uid = check_id(uid, "user_id")
+            if not guild:
+                raise ApiError(400, "no_guild")
+            client = self.client()
+            member = self.supporter_bot.member(client, guild, uid)
+            if member is None:
+                raise ApiError(400, "not_member")
+            person = member
+        res = self.supporters.simulate(str(q.body.get("text") or ""), person)
+        if res is None:
+            return 200, {"no_order": True, "order": "", "reply_key": "", "reply": "", "grant": [], "notify": [],
+                         "assumed": assumed}
+        names: dict[str, str] = {}
+        if res["grant_role_ids"] and guild:
+            try:
+                info = self.supporter_bot.roles_info(client or self.client(), guild)
+                names = {r["id"]: r["name"] for r in info["items"]}
+            except (ApiError, HearbackError):
+                names = {}
+        return 200, {"no_order": False, "order": res["order"], "reply_key": res["reply_key"], "reply": res["reply"],
+                     "grant": [{"id": r, "name": names.get(r, r)} for r in res["grant_role_ids"]],
+                     "notify": res["notify_texts"], "assumed": assumed}
+
+    def api_guild_roles(self, q: Request) -> tuple[int, Any]:
+        try:
+            return 200, self.supporter_bot.roles_info(self.client(), q.groups[0])
+        except DiscordError:
+            raise ApiError(400, "roles_unavailable") from None
+
+    def api_guild_members(self, q: Request) -> tuple[int, Any]:
+        guild, text = q.groups[0], q.query.get("q", "").strip()[:50]
+        try:
+            if text:
+                raw = self.client().request("GET", "/guilds/%s/members/search" % guild, {"query": text, "limit": 20})
+            else:
+                raw = self.client().request("GET", "/guilds/%s/members" % guild, {"limit": 20})
+        except DiscordError:
+            raise ApiError(400, "members_unavailable") from None
+        return 200, {"items": [_member_view(m) for m in raw if not (m.get("user") or {}).get("bot")]}
+
     # ---- logs
     def api_logs(self, q: Request) -> tuple[int, Any]:
         try:
@@ -809,6 +1042,7 @@ def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int
     url = "http://127.0.0.1:%d/#k=%s" % (app.port, app.secret)
     print("SWLink is running. Open this link (it carries this run's key):\n  %s\nPress Ctrl+C to stop." % url,
           flush=True)
+    app.supporter_bot.start()
     if open_browser:
         try:
             webbrowser.open(url)
@@ -819,6 +1053,7 @@ def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int
     except KeyboardInterrupt:
         pass
     finally:
+        app.supporter_bot.stop()
         app.runtime.stop()
         srv.server_close()
     return 0

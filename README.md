@@ -156,6 +156,14 @@ grouped by cluster for a coding agent. The **Bot messages** page lists what the 
 channel so you can fix a typo or delete a message. Screenshots (up to 3) and error lines from `.txt`/`.log`
 attachments are sent along; Sync downloads those attachments.
 
+**Supporter roles from Afdian.** Discord's own paid roles are US-only, and many Chinese creators collect support on
+Afdian (爱发电) instead. The **Supporters** page links the two: a supporter pays on Afdian, DMs the bot the order
+number, the bot checks it with Afdian's open API and gives the supporter role. Paste your Afdian `user_id` and API token
+(the token goes to the OS keyring or `HEARBACK_AFDIAN_TOKEN`, never to a file), pick the role, try **Simulate a DM**,
+then switch on **DM checking**. Replies are fixed templates (no model), amounts are never shown or sent anywhere, order
+numbers are masked in notices and logs, an order can be claimed once, and the owner can claim or revoke by hand. If the
+bot's role sits below the supporter role the page tells you exactly what to drag where.
+
 ## Safety model
 
 What is enforced, and by what:
