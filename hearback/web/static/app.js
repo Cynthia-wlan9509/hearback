@@ -48,7 +48,7 @@ const I18N = {
     "llm.nokeyring": "没有可用的系统钥匙串。请改用环境变量 {v}（需重启）。",
     "llm.retries": "重试次数", "llm.timeout": "超时（秒）", "llm.fallbackNote": "开启后，当前模型失败时按顺序尝试其他已启用的模型。",
     "llm.delTitle": "删除这个模型？", "llm.delText": "密钥也会一并从钥匙串删除。", "llm.testing": "测试中…",
-    "llm.testOk": "连通：{t}", "llm.keyHint": "密钥", "llm.nokey": "未设置密钥",
+    "llm.testOk": "连通：{t}", "llm.keyHint": "密钥", "llm.nokey": "未设置密钥", "llm.keyKeep": "已设置，留空则不改",
     "agent.new": "+ 新建智能体", "agent.desc": "说明", "agent.prompt": "系统提示词", "agent.llm": "使用的模型", "agent.default": "当前模型（默认）",
     "agent.delTitle": "删除这个智能体？", "agent.locked": "默认智能体不能删除",
     "rules.dm": "私信默认", "rules.guild": "服务器默认", "rules.agent": "智能体", "rules.trigger": "触发", "rules.cooldown": "冷却（秒）",
@@ -112,7 +112,7 @@ const I18N = {
     "llm.nokeyring": "No OS keyring is available. Use the environment variable {v} instead (restart needed).",
     "llm.retries": "Retries", "llm.timeout": "Timeout (seconds)", "llm.fallbackNote": "When on, a failing model hands over to the other enabled models in order.",
     "llm.delTitle": "Delete this model?", "llm.delText": "Its key is removed from the keyring too.", "llm.testing": "Testing…",
-    "llm.testOk": "Reachable: {t}", "llm.keyHint": "key", "llm.nokey": "no key set",
+    "llm.testOk": "Reachable: {t}", "llm.keyHint": "key", "llm.nokey": "no key set", "llm.keyKeep": "Set. Leave empty to keep it",
     "agent.new": "+ New agent", "agent.desc": "Description", "agent.prompt": "System prompt", "agent.llm": "Model", "agent.default": "Active model (default)",
     "agent.delTitle": "Delete this agent?", "agent.locked": "The default agent cannot be deleted",
     "rules.dm": "Direct messages default", "rules.guild": "Server default", "rules.agent": "Agent", "rules.trigger": "Trigger", "rules.cooldown": "Cooldown (s)",
@@ -504,6 +504,7 @@ async function pageLLM() {
         h("div", { class: "kv" }, p.key_set ? "… " + p.key_hint : t("llm.nokey"), " · ", p.calls_s + "/s · " + p.calls_min + "/min"),
         h("div", { class: "card-actions" }, statusBadge(p),
           h("button", { class: "btn small", disabled: active, onclick: async () => { try { await api("POST", "/api/llm/" + p.id + "/activate", {}); renderPage(); } catch (e) { fail(e); } } }, active ? t("llm.active") : t("llm.setActive")),
+          h("button", { class: "btn small", onclick: () => editProfile(p) }, t("common.edit")),
           h("button", { class: "btn small", onclick: async (ev) => { ev.target.disabled = true; toast(t("llm.testing")); try { const r = await api("POST", "/api/llm/" + p.id + "/test", {}); toast(r.ok ? t("llm.testOk", { t: r.text }) : r.error, !r.ok); renderPage(); } catch (e) { fail(e); ev.target.disabled = false; } } }, t("llm.test")),
           h("span", { class: "spacer" }),
           h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => { if (await confirmBox(t("llm.delTitle"), t("llm.delText"), t("common.delete"), true)) { try { await api("DELETE", "/api/llm/" + p.id, {}); renderPage(); } catch (e) { fail(e); } } } }, trashIcon())));
@@ -534,6 +535,21 @@ async function pageLLM() {
       try {
         const r = await api("POST", "/api/llm", { preset: presetSel.value, name: name.value, protocol: p.protocol, base_url: base.value, model: model.value, key: key.value, max_tokens: +maxTok.value });
         if (r.key_error) toast(r.key_error, true);
+        renderPage();
+      } catch (e) { fail(e); return false; }
+    } }]);
+  }
+  function editProfile(p) {
+    const name = h("input", { type: "text", value: p.name }), base = h("input", { type: "url", value: p.base_url || "", placeholder: "https://" });
+    const model = h("input", { type: "text", value: p.model }), maxTok = h("input", { type: "number", value: String(p.max_tokens || 1024), min: "1" });
+    const key = h("input", { type: "password", autocomplete: "off", placeholder: p.key_set ? t("llm.keyKeep") : "" });
+    const body = h("div", null, field(t("common.name"), name), field(t("llm.baseUrl"), base), field(t("llm.model"), model),
+      field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), field(t("llm.maxTokens"), maxTok),
+      data.keyring ? null : h("div", { class: "badge err" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })));
+    modal(t("common.edit") + " · " + p.name, body, [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
+      try {
+        await api("PUT", "/api/llm/" + p.id, { name: name.value, base_url: base.value, model: model.value, max_tokens: +maxTok.value });
+        if (key.value.trim()) await api("POST", "/api/llm/" + p.id + "/key", { key: key.value.trim() });
         renderPage();
       } catch (e) { fail(e); return false; }
     } }]);
