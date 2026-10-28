@@ -254,6 +254,14 @@ def read_json(path: str | Path, default: Any = None) -> Any:
         return default
 
 
+def read_json_strict(path: str | Path, default: Any, what: str) -> Any:
+    """read_json that turns a damaged file into a HearbackError naming it (never silently resets user data)."""
+    try:
+        return read_json(path, default)
+    except ValueError:
+        raise HearbackError("%s is damaged (not valid JSON): fix or delete %s" % (what, Path(path).name)) from None
+
+
 @contextlib.contextmanager
 def file_lock(path: str | Path, *, stale: float = 30.0, timeout: float = 15.0, poll: float = 0.02,
               sleep: Callable[[float], None] = time.sleep) -> Iterator[None]:

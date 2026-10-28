@@ -73,12 +73,12 @@ def test_the_scan_actually_scans_something():
 
 
 def _modules():
-    return sorted((ROOT / "hearback").glob("*.py"))
+    return sorted((ROOT / "hearback").glob("*.py")) + sorted((ROOT / "hearback" / "web").glob("*.py"))
 
 
 def test_core_imports_are_stdlib_only():
     stdlib = set(sys.stdlib_module_names)
-    optional = {"PIL", "mcp"}
+    optional = {"PIL", "mcp", "anthropic", "openai", "discord", "keyring"}
     bad = []
     for f in _modules():
         tree = ast.parse(f.read_text(encoding="utf-8"))
@@ -90,7 +90,7 @@ def test_core_imports_are_stdlib_only():
             names = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module or ""]
             for name in names:
                 top = name.split(".")[0]
-                if top in stdlib or top == "hearback" or (n.level and not n.module):
+                if top in stdlib or top == "hearback" or (getattr(n, "level", 0) and not n.module):
                     continue
                 if top in optional and id(n) in nested:       # optional extras only inside functions
                     continue
@@ -100,7 +100,8 @@ def test_core_imports_are_stdlib_only():
 
 def test_every_spec_module_exists():
     expected = {"__init__", "__main__", "config", "discord", "ledger", "sync", "queue", "actions", "release", "staff",
-                "templates", "guide", "render", "editor", "fake", "demo", "cli", "mcp_server", "util"}
+                "templates", "guide", "render", "editor", "fake", "demo", "cli", "mcp_server", "util", "llm", "agents",
+                "chatbot", "server"}
     assert expected <= {f.stem for f in _modules()}
 
 
@@ -108,10 +109,13 @@ def test_pyproject_matches_the_spec():
     meta = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     proj = meta["project"]
     assert proj["name"] == "hearback-desk" and proj["requires-python"] == ">=3.11" and proj["dependencies"] == []
-    assert proj["scripts"] == {"hearback": "hearback.cli:main"}
-    assert proj["optional-dependencies"] == {"mcp": ["mcp>=1.19,<3"], "images": ["pillow"], "dev": ["pytest"]}
+    assert proj["scripts"] == {"hearback": "hearback.cli:main", "swlink": "hearback.web.server:main"}
+    extras = proj["optional-dependencies"]
+    assert extras["mcp"] == ["mcp>=1.19,<3"] and extras["images"] == ["pillow"] and extras["dev"] == ["pytest"]
+    assert set(extras) == {"mcp", "images", "llm", "bot", "keyring", "all", "dev"}
+    assert set(extras["all"]) >= set(extras["mcp"] + extras["images"] + extras["llm"] + extras["bot"] + extras["keyring"])
     assert meta["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "hearback.__version__"}
-    assert hearback.__version__ == "0.1.0"
+    assert hearback.__version__ == "0.2.0.dev0"
     lic = (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert lic.startswith("MIT License") and "Copyright (c) 2026 Cynthia-wlan9509 and contributors" in lic
 
@@ -123,7 +127,7 @@ def test_gitignore_covers_the_basics():
 
 def test_version_flag_runs_as_a_module():
     r = subprocess.run([sys.executable, "-m", "hearback", "--version"], cwd=ROOT, capture_output=True, timeout=20)
-    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.1.0"
+    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.2.0.dev0"
 
 
 def test_sources_use_lf_line_endings():

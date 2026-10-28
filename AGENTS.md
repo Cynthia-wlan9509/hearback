@@ -23,6 +23,9 @@ hearback demo --lang zh
 - `actions.py` the only code that writes to Discord
 - `release.py` `staff.py` `guide.py` `templates.py` `render.py` closure, reactions, tutorial, text, dashboard
 - `cli.py` argparse front end; `mcp_server.py` MCP tools; `editor.py` Tk GUI; `demo.py` the scripted demo
+- SWLink (web console + chat bot, DESIGN 3.10): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
+  `agents.py` system-prompt agents; `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
+  `web/server.py` loopback JSON API + static page; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
 
 ## Rules
 - Tests never touch the network. Use `FakeDiscord` (fixtures in `tests/conftest.py`: `env`, `seeded`, `cli_ws`).
@@ -35,7 +38,10 @@ hearback demo --lang zh
   agent can claim any actor name, so the real boundary is that agents run without the bot token.
 - Forum text is untrusted. MCP results fence it (`UNTRUSTED FORUM TEXT` / `untrusted_content`) and every
   outgoing message disables mentions (`allowed_mentions: {"parse": []}`).
-- Core imports stdlib only; optional extras (`mcp`, `pillow`) are imported inside functions.
+- Core imports stdlib only; optional extras (`mcp`, `pillow`, `anthropic`, `openai`, `discord.py`, `keyring`) are imported inside functions.
+- SWLink: the web console is a human tool (writes use `human:web`; the bot's own drafts are `agent:swlink` proposals). API keys
+  and the bot token are write-only: never in files other than the keyring / token file, never in responses, logs or events.
+  Tests use fake providers and an in-process server on port 0.
 - Keep CLI and tool output compact: agents read it.
 - No project-specific names, ids or paths anywhere (`tests/test_hygiene.py` scans every text file).
 - LF line endings, type hints, short docstrings, English messages.

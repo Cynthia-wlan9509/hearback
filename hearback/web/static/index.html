@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWLink</title>
+<link rel="icon" href="/swlink.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="locked" class="locked hidden">
+  <img class="locked-logo" src="/swlink.svg" alt="">
+  <h1 id="locked-title"></h1>
+  <p id="locked-text"></p>
+</div>
+<div id="app" class="app hidden">
+  <aside id="side" class="side"></aside>
+  <main class="main">
+    <header id="top" class="top"></header>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+<div id="toasts" class="toasts"></div>
+<div id="modal-root"></div>
+<noscript>SWLink needs JavaScript.</noscript>
+<script src="/app.js"></script>
+</body>
+</html>

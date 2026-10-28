@@ -20,13 +20,21 @@ dependencies = []
 [project.optional-dependencies]
 mcp = ["mcp>=1.19,<3"]
 images = ["pillow"]
+llm = ["anthropic>=0.40", "openai>=1.50"]
+bot = ["discord.py>=2.4"]
+keyring = ["keyring>=24"]
+all = ["mcp>=1.19,<3", "pillow", "anthropic>=0.40", "openai>=1.50", "discord.py>=2.4", "keyring>=24"]
 dev = ["pytest"]
 
 [project.scripts]
 hearback = "hearback.cli:main"
+swlink = "hearback.web.server:main"
 
 [tool.setuptools]
-packages = ["hearback"]
+packages = ["hearback", "hearback.web"]
+
+[tool.setuptools.package-data]
+"hearback.web" = ["static/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "hearback.__version__" }

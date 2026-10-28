@@ -268,6 +268,13 @@ class FakeDiscord:
     def _route(self, method: str, path: str, params: dict, body: Any, files: list) -> Any:
         if method == "GET" and path == "/users/@me":
             return self.bot
+        if method == "GET" and path == "/users/@me/guilds":
+            return [{"id": self.guild_id, "name": "Fake Guild"}]
+        m = re.fullmatch(r"/guilds/(\d+)/channels", path)
+        if method == "GET" and m:
+            if m.group(1) != self.guild_id:
+                raise _HTTP(404, "Unknown Guild", 10004)
+            return [c for c in self.channels.values() if c["type"] != 11]
         m = re.fullmatch(r"/guilds/(\d+)/threads/active", path)
         if method == "GET" and m:
             return {"threads": [t for t in self.channels.values()

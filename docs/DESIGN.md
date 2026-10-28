@@ -3,7 +3,7 @@
 > Every player who reports a bug hears back.
 > An agent-native, human-approved bug desk for Discord forum channels.
 
-Status: draft v0.1 (2026-10-24). Extracted from a production workflow that handled a real
+Status: draft v0.2 (2026-10-24; SWLink added). Extracted from a production workflow that handled a real
 game community's bug forum (29 reports → 22 fixed, all reporters notified on release).
 
 ## 1. Problem
@@ -196,6 +196,39 @@ game's forum ("Starlight Bakery", 12 reports incl. duplicates, a need-info, scre
 the whole loop — sync → (scripted or LLM) triage → proposals → approve → send → verify → release
 → notify — and prints a transcript. Judges and contributors can try it in 30 seconds.
 
+### 3.10 SWLink: web console and chat bot (`hearback web`, optional)
+
+A local console plus an opt-in always-on bot. It reuses the ledger, the queue and the REST client; nothing in
+the agent-facing MCP surface changes.
+
+```
+ browser ──(127.0.0.1, X-SWLink-Key)──▶ hearback.web.server (stdlib http.server, JSON API + static page)
+                                          │
+        hearback.chatbot  rules · decide · prompt · inbox ─┬─▶ queue.propose("post", actor agent:swlink)   (draft)
+        hearback.agents   system prompts                   └─▶ actions.post (REST, mentions off)           (auto)
+        hearback.llm      profiles, keys, providers, fallback
+        BotRuntime        discord.py gateway in its own thread (lazy import, optional extra `bot`)
+```
+
+- **Rules** (`.hearback/channels.json`): per channel `{mode: off|draft|auto, agent, trigger: mention|all,
+  cooldown_s}`, plus a DM default and a server default. Everything defaults to `off`. `decide()` ignores bots and the
+  bot itself, answers in guild channels only when mentioned (or replied to) under `trigger = mention`, honours the
+  cooldown, and turns `auto` into `draft` past an hourly cap (`[swlink] hourly_cap`, default 60).
+- **Prompting**: the agent's system prompt plus a security suffix; the last 20 messages and the new one are fenced as
+  `UNTRUSTED DISCORD TEXT` with a random id, the same idea as the MCP forum fence. Replies are split with `split_text`
+  and sent with `allowed_mentions: {"parse": []}`.
+- **Drafts are proposals** by `agent:swlink` (kind `post`, target = channel id). Approve, reject and send stay human
+  steps; the console performs them as `human:web`. Auto replies are logged as events by `bot:swlink`.
+- **LLM profiles** (`.hearback/llm.json`): Anthropic or OpenAI protocol, any base URL (official, DeepSeek, relays).
+  Keys are kept in the OS keyring (service `hearback-swlink`) or `HEARBACK_LLM_KEY_<ID>`; the file holds a four
+  character hint only. One active profile, optional fallback to the others in order, retries, per-profile call
+  counters. All error text passes through a scrubber that removes keys and tokens.
+- **Console security**: loopback bind, per-run secret in the launch link (kept in sessionStorage, removed from the
+  address bar), Host and Origin checks, JSON-only writes, static files only from the package, a strict CSP, no
+  `innerHTML`. The bot token and API keys are write-only through the API.
+- Without discord.py the console still works over REST (read channels, human send, AI draft, approvals); only the live
+  gateway needs the `bot` extra. Without the forum configured, chat features need just the token.
+
 ## 4. Config (`hearback.toml`)
 
 ```toml
@@ -221,11 +254,15 @@ download = "#supporters channel"
 
 [templates]
 language = "en"               # en | zh — built-in reply templates
+
+[swlink]
+hourly_cap = 60               # auto replies per hour before the bot drafts instead
 ```
 
 ## 5. Non-goals (v0.1)
 
-- No always-on gateway bot; everything is pull-based and runs when an agent/human runs it.
+- The core has no always-on gateway bot: everything is pull-based and runs when an agent/human runs it. The chat bot in
+  3.10 (SWLink) is optional and opt-in, and its replies obey the same approval rules.
 - No automatic code fixing — that is the coding agent's job; Hearback gives it clean input
   (deduped clusters, attachments, logs) and takes its output (fix notes, build id).
 - No GitHub Issues sync in v0.1 (planned as an export target).

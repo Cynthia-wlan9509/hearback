@@ -1,0 +1,612 @@
+"""SWLink web console: a local-only HTTP server (stdlib) serving a static page and a small JSON API.
+
+Safety: binds 127.0.0.1 only; every /api request needs the per-run secret in `X-SWLink-Key`; the Host header
+must be this server's own address (DNS rebinding); writes need a JSON content type; static files come only from
+the package `static/` directory. The bot token and API keys are write-only: no response, log or file written by
+this module contains them. Writes made from the page use the actor `human:web`.
+"""
+from __future__ import annotations
+
+import argparse
+import hmac
+import json
+import os
+import re
+import secrets
+import sys
+import time
+import urllib.parse
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+from hearback import __version__, actions
+from hearback.agents import AgentStore
+from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
+                              display_name, message_from_rest)
+from hearback.config import Config, load_config
+from hearback.discord import DiscordClient
+from hearback.ledger import Ledger
+from hearback.llm import PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub, scrub_obj
+from hearback.queue import Queue
+from hearback.sync import format_delta, sync as run_sync
+from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+ACTOR = "human:web"
+KEY_HEADER = "X-SWLink-Key"
+DEFAULT_PORT = 8765
+MAX_BODY = 1024 * 1024
+CSP = ("default-src 'self'; img-src 'self' data: https://cdn.discordapp.com https://media.discordapp.net; "
+       "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+        ".ico": "image/x-icon", ".json": "application/json; charset=utf-8"}
+# View Channels, Send Messages, Send Messages in Threads, Read Message History, Attach Files
+INVITE_PERMISSIONS = (1 << 10) | (1 << 11) | (1 << 38) | (1 << 16) | (1 << 15)
+PORTAL_URL = "https://discord.com/developers/applications"
+TEXT_CHANNEL_TYPES = (0, 5)
+SEND_LIMIT = 8000
+
+
+class ApiError(Exception):
+    """An error answer with a status code."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
+
+
+class Request:
+    def __init__(self, method: str, path: str, query: dict[str, str], body: dict, groups: tuple[str, ...]):
+        self.method, self.path, self.query, self.body, self.groups = method, path, query, body, groups
+
+
+class App:
+    """All state and logic behind the JSON API; the HTTP layer only routes to it."""
+
+    def __init__(self, cfg: Config, *, client_factory: Callable[[], DiscordClient] | None = None,
+                 llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
+                 clock: Callable[[], float] = time.time):
+        self.cfg = cfg
+        self.secret = secret or secrets.token_urlsafe(24)
+        self.port = 0
+        self.clock = clock
+        self._client_factory = client_factory or (lambda: DiscordClient(cfg.token()))
+        self.ledger = Ledger(cfg.ledger_path)
+        self.queue = Queue(cfg.queue_dir, self.ledger, protected=cfg.protected_paths())
+        self.llm = llm_store or LLMStore(cfg.data_dir)
+        self.agents = AgentStore(cfg.data_dir)
+        self.rules = RuleStore(cfg.data_dir)
+        self.inbox = Inbox(cfg.data_dir)
+        self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
+                           self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
+        self.runtime = runtime or BotRuntime(self._token, self.on_message)
+        self._dir_cache: tuple[float, list[dict], str] | None = None
+        self._bot_id = ""
+        self.routes = self._build_routes()
+
+    # ---- plumbing
+    def _token(self) -> str:
+        t = self.cfg.token()
+        register_secret(t)
+        return t
+
+    def client(self) -> DiscordClient:
+        try:
+            return self._client_factory()
+        except HearbackError:
+            raise ApiError(400, "no_token") from None
+
+    def token_state(self) -> dict:
+        try:
+            self._token()
+        except HearbackError:
+            return {"set": False, "source": "none"}
+        env = (os.environ.get(self.cfg.token_env) or "").strip()
+        return {"set": True, "source": "env" if env else "file"}
+
+    def bot_id(self) -> str:
+        rid = self.runtime.status().get("bot_id")
+        if rid:
+            return rid
+        if not self._bot_id:
+            self._bot_id = str(self.client().me().get("id", ""))
+        return self._bot_id
+
+    def _llm_call(self, agent: dict, system: str, messages: list[dict]) -> str:
+        return complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)[0]
+
+    def _send_auto(self, channel: str, text: str) -> list[str]:
+        return actions.post(self.client(), self.ledger, channel, text)["message_ids"]
+
+    def on_message(self, msg: Message, bot_id: str) -> None:
+        """Gateway callback (runs in a worker thread)."""
+        res = self.bot.handle(msg, bot_id)
+        if res.get("action") == "error":
+            self.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
+
+    def directory(self, force: bool = False) -> tuple[list[dict], str]:
+        """Servers and their text channels: from the live gateway when online, else REST (cached 60 s)."""
+        if self.runtime.online and self.runtime.guilds():
+            return self.runtime.guilds(), ""
+        now = self.clock()
+        if not force and self._dir_cache and now - self._dir_cache[0] < 60:
+            return self._dir_cache[1], self._dir_cache[2]
+        try:
+            c = self.client()
+            out = []
+            for g in c.request("GET", "/users/@me/guilds"):
+                chans = c.request("GET", "/guilds/%s/channels" % g["id"])
+                out.append({"id": str(g["id"]), "name": g.get("name", ""),
+                            "channels": [{"id": str(ch["id"]), "name": ch.get("name", "")}
+                                         for ch in chans if ch.get("type") in TEXT_CHANNEL_TYPES]})
+            res: tuple[float, list[dict], str] = (now, out, "")
+        except ApiError as e:
+            res = (now, [], e.message)
+        except HearbackError as e:
+            res = (now, [], scrub(str(e))[:200])
+        self._dir_cache = res
+        return res[1], res[2]
+
+    def _channel_label(self, channel_id: str) -> str:
+        if self._dir_cache:
+            for g in self._dir_cache[1]:
+                for c in g["channels"]:
+                    if c["id"] == channel_id:
+                        return "%s / #%s" % (g["name"], c["name"])
+        for c in self.inbox.conversations():
+            if c["id"] == channel_id:
+                return (c["guild_name"] + " / " if c["guild_name"] else "DM / ") + c["channel_name"]
+        return channel_id
+
+    # ---- routes
+    def _build_routes(self) -> list[tuple[str, re.Pattern[str], Callable[[Request], tuple[int, Any]]]]:
+        r = []
+
+        def add(method: str, pattern: str, fn: Callable[[Request], tuple[int, Any]]) -> None:
+            r.append((method, re.compile("^" + pattern + "$"), fn))
+
+        add("GET", "/api/status", self.api_status)
+        add("POST", "/api/bot/start", self.api_bot_start)
+        add("POST", "/api/bot/stop", self.api_bot_stop)
+        add("GET", "/api/conversations", self.api_conversations)
+        add("GET", "/api/conversations/(\\d+)/messages", self.api_conv_messages)
+        add("POST", "/api/conversations/(\\d+)/draft", self.api_conv_draft)
+        add("POST", "/api/conversations/(\\d+)/send", self.api_conv_send)
+        add("GET", "/api/rules", self.api_rules_get)
+        add("PUT", "/api/rules", self.api_rules_put)
+        add("GET", "/api/guilds", self.api_guilds)
+        add("GET", "/api/queue", self.api_queue)
+        add("POST", "/api/queue/send", self.api_queue_send)
+        add("POST", "/api/queue/([\\w-]+)/approve", self.api_queue_approve)
+        add("POST", "/api/queue/([\\w-]+)/reject", self.api_queue_reject)
+        add("GET", "/api/llm", self.api_llm_get)
+        add("POST", "/api/llm", self.api_llm_create)
+        add("GET", "/api/llm/presets", lambda q: (200, {"items": PRESETS}))
+        add("PUT", "/api/llm/settings", self.api_llm_settings)
+        add("PUT", "/api/llm/([\\w-]+)", self.api_llm_update)
+        add("DELETE", "/api/llm/([\\w-]+)", self.api_llm_delete)
+        add("POST", "/api/llm/([\\w-]+)/key", self.api_llm_key)
+        add("POST", "/api/llm/([\\w-]+)/activate", self.api_llm_activate)
+        add("POST", "/api/llm/([\\w-]+)/test", self.api_llm_test)
+        add("GET", "/api/agents", lambda q: (200, {"items": self.agents.list()}))
+        add("POST", "/api/agents", lambda q: (201, self.agents.create(q.body)))
+        add("PUT", "/api/agents/([\\w-]+)", lambda q: (200, self.agents.update(q.groups[0], q.body)))
+        add("DELETE", "/api/agents/([\\w-]+)", self.api_agent_delete)
+        add("GET", "/api/forum", self.api_forum)
+        add("POST", "/api/forum/sync", self.api_forum_sync)
+        add("GET", "/api/logs", self.api_logs)
+        add("GET", "/api/settings", self.api_settings)
+        add("PUT", "/api/settings/token", self.api_token)
+        return r
+
+    def dispatch(self, req_method: str, path: str, query: dict[str, str], body: dict) -> tuple[int, Any]:
+        known_path = False
+        for method, rx, fn in self.routes:
+            m = rx.match(path)
+            if not m:
+                continue
+            known_path = True
+            if method == req_method:
+                return fn(Request(req_method, path, query, body, m.groups()))
+        raise ApiError(405 if known_path else 404, "method not allowed" if known_path else "not found")
+
+    # ---- status / bot
+    def api_status(self, q: Request) -> tuple[int, Any]:
+        st = self.runtime.status()
+        guilds = self.runtime.guilds() if self.runtime.online else (self._dir_cache[1] if self._dir_cache else [])
+        rules = self.rules.load()
+        rule_on = any(r["mode"] != "off" for r in [rules["dm_default"], rules["guild_default"],
+                                                    *rules["channels"].values()])
+        tok = self.token_state()
+        active = self.llm.active_public()
+        llm_ready = any(p["key_set"] for p in self.llm.list_public())
+        return 200, {
+            "version": __version__, "bot": st, "guilds": len(guilds),
+            "pending": len(self.queue.list("pending")), "auto_today": self.bot.auto_today(),
+            "forum_threads": len(self.ledger.load()["threads"]), "forum_configured": bool(self.cfg.forum_id),
+            "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
+            "token_set": tok["set"],
+            "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
+
+    def api_bot_start(self, q: Request) -> tuple[int, Any]:
+        return 200, self.runtime.start()
+
+    def api_bot_stop(self, q: Request) -> tuple[int, Any]:
+        return 200, self.runtime.stop()
+
+    # ---- conversations
+    def api_conversations(self, q: Request) -> tuple[int, Any]:
+        guilds, reason = self.directory()
+        items: dict[str, dict] = {}
+        for g in guilds:
+            for c in g["channels"]:
+                items[c["id"]] = {"id": c["id"], "kind": "guild", "guild_id": g["id"], "guild_name": g["name"],
+                                  "channel_name": c["name"], "preview": "", "last_ts": ""}
+        for c in self.inbox.conversations():
+            items.setdefault(c["id"], c).update({"preview": c["preview"], "last_ts": c["last_ts"]})
+        for c in items.values():
+            rule = self.rules.rule_for(c["id"], c["kind"] == "dm")
+            c["mode"], c["agent"] = rule["mode"], rule["agent"]
+        out = sorted(items.values(), key=lambda c: (c["guild_name"], c["channel_name"]))
+        out.sort(key=lambda c: c["last_ts"], reverse=True)
+        return 200, {"items": out, "reason": reason}
+
+    def _fetch(self, channel: str, limit: int) -> tuple[dict, list[dict]]:
+        c = self.client()
+        info = c.request("GET", "/channels/%s" % channel)
+        raw = c.request("GET", "/channels/%s/messages" % channel, {"limit": max(1, min(limit, 100))})
+        return info, list(reversed(raw))
+
+    def api_conv_messages(self, q: Request) -> tuple[int, Any]:
+        try:
+            limit = int(q.query.get("limit", "50"))
+        except ValueError:
+            raise ApiError(400, "limit must be a number") from None
+        bot_id = self.bot_id()
+        _info, raw = self._fetch(q.groups[0], limit)
+        items = []
+        for m in raw:
+            a = m.get("author") or {}
+            items.append({"id": str(m.get("id")), "author_id": str(a.get("id", "")), "author_name": display_name(a),
+                          "avatar": avatar_url(a), "content": m.get("content") or "", "time": m.get("timestamp") or "",
+                          "is_bot": bool(a.get("bot")), "is_self": str(a.get("id", "")) == bot_id,
+                          "attachments": len(m.get("attachments") or [])})
+        return 200, {"items": items}
+
+    def api_conv_draft(self, q: Request) -> tuple[int, Any]:
+        channel = q.groups[0]
+        bot_id = self.bot_id()
+        info, raw = self._fetch(channel, 21)
+        guild_id = str(info["guild_id"]) if info.get("guild_id") else None
+        msgs = [message_from_rest(m, bot_id, guild_id=guild_id, channel_name=info.get("name", "")) for m in raw]
+        target = next((m for m in reversed(msgs) if not m.is_bot and m.author_id != bot_id and m.content.strip()), None)
+        if target is None:
+            raise ApiError(400, "nothing to answer yet: no message from another person")
+        history = msgs[:msgs.index(target)]
+        rule = self.rules.rule_for(channel, guild_id is None)
+        agent = self.agents.get_or_auto(q.body.get("agent") or rule.get("agent"))
+        system, messages = build_messages(agent, history, target)
+        text, pid = complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)
+        self.ledger.event(ACTOR, "ai_draft", channel, {"agent": agent["id"], "profile": pid})
+        return 200, {"text": text, "agent": agent["id"], "profile": pid}
+
+    def api_conv_send(self, q: Request) -> tuple[int, Any]:
+        text = str(q.body.get("text") or "")
+        if not text.strip():
+            raise ApiError(400, "the message is empty")
+        if len(text) > SEND_LIMIT:
+            raise ApiError(400, "the message is over %d characters" % SEND_LIMIT)
+        channel = q.groups[0]
+        res = actions.post(self.client(), self.ledger, channel, text)
+        self.ledger.event(ACTOR, "send", channel, {"messages": res["message_ids"]})
+        return 200, {"message_ids": res["message_ids"]}
+
+    # ---- rules / guilds
+    def api_rules_get(self, q: Request) -> tuple[int, Any]:
+        return 200, {"rules": self.rules.load(), "agents": [{"id": a["id"], "name": a["name"]}
+                                                           for a in self.agents.list()]}
+
+    def api_rules_put(self, q: Request) -> tuple[int, Any]:
+        clean = self.rules.save(q.body)
+        self.ledger.event(ACTOR, "rules_update", None, {"channels": len(clean["channels"])})
+        return 200, {"rules": clean}
+
+    def api_guilds(self, q: Request) -> tuple[int, Any]:
+        guilds, reason = self.directory(force=q.query.get("refresh") == "1")
+        return 200, {"items": guilds, "reason": reason}
+
+    # ---- queue
+    def _proposal(self, p: Any) -> dict:
+        return {"id": p.id, "kind": p.kind, "state": p.state, "actor": p.actor, "created": p.created,
+                "thread": p.thread, "target": self._channel_label(p.thread) if p.thread else "", "text": p.text,
+                "why": p.why, "title": p.title, "add": p.add, "remove": p.remove, "error": p.error}
+
+    def api_queue(self, q: Request) -> tuple[int, Any]:
+        state = q.query.get("state") or "pending"
+        return 200, {"items": [self._proposal(p) for p in self.queue.list(state)]}
+
+    def api_queue_approve(self, q: Request) -> tuple[int, Any]:
+        return 200, self._proposal(self.queue.approve([q.groups[0]], ACTOR)[0])
+
+    def api_queue_reject(self, q: Request) -> tuple[int, Any]:
+        return 200, self._proposal(self.queue.reject([q.groups[0]], ACTOR, str(q.body.get("reason") or ""))[0])
+
+    def api_queue_send(self, q: Request) -> tuple[int, Any]:
+        ids = [str(i) for i in q.body.get("ids") or []] or None
+        rep = self.queue.send(self.client(), self.ledger, forum_id=self.cfg.forum_id, delay=self.cfg.send_delay,
+                              actor=ACTOR, ids=ids)
+        return 200, {"sent": [p.id for p in rep.sent], "failed": [{"id": p.id, "error": scrub(p.error)}
+                                                                    for p in rep.failed],
+                     "mismatches": rep.mismatches, "lines": rep.lines()}
+
+    # ---- llm
+    def api_llm_get(self, q: Request) -> tuple[int, Any]:
+        return 200, {"settings": self.llm.settings(), "profiles": self.llm.list_public(),
+                     "keyring": self.llm.keyring_available()}
+
+    def api_llm_create(self, q: Request) -> tuple[int, Any]:
+        b = dict(q.body)
+        key = str(b.pop("key", "") or "")
+        prof = self.llm.add_profile(b, preset=str(b.get("preset") or ""))
+        if key:
+            try:
+                prof = self.llm.set_key(prof["id"], key)
+            except LLMError as e:
+                return 201, {**prof, "key_error": str(e)}
+        return 201, prof
+
+    def api_llm_update(self, q: Request) -> tuple[int, Any]:
+        return 200, self.llm.update_profile(q.groups[0], {k: v for k, v in q.body.items() if k != "key"})
+
+    def api_llm_delete(self, q: Request) -> tuple[int, Any]:
+        self.llm.delete_profile(q.groups[0])
+        return 200, {"deleted": q.groups[0]}
+
+    def api_llm_key(self, q: Request) -> tuple[int, Any]:
+        return 200, self.llm.set_key(q.groups[0], str(q.body.get("key") or ""))
+
+    def api_llm_activate(self, q: Request) -> tuple[int, Any]:
+        self.llm.activate(q.groups[0])
+        return 200, {"settings": self.llm.settings()}
+
+    def api_llm_test(self, q: Request) -> tuple[int, Any]:
+        return 200, {**self.llm.test_profile(q.groups[0]), "profile": self.llm.public(self.llm.get(q.groups[0]))}
+
+    def api_llm_settings(self, q: Request) -> tuple[int, Any]:
+        return 200, self.llm.set_settings(q.body)
+
+    def api_agent_delete(self, q: Request) -> tuple[int, Any]:
+        self.agents.delete(q.groups[0])
+        return 200, {"deleted": q.groups[0]}
+
+    # ---- forum / logs
+    def api_forum(self, q: Request) -> tuple[int, Any]:
+        if not self.cfg.forum_id:
+            return 200, {"items": [], "configured": False,
+                         "reason": "No bug forum is configured. Add forum_id to hearback.toml ([discord])."}
+        data = self.ledger.load()
+        rows = []
+        for tid, rec in data["threads"].items():
+            tri = rec.get("triage") or {}
+            replies = rec.get("replies") or []
+            rows.append({"id": tid, "title": rec.get("title", ""), "status": tri.get("status", "new"),
+                         "cluster": tri.get("cluster", ""), "tags": rec.get("tags", []),
+                         "last_activity": (replies[-1].get("time") if replies else rec.get("created", ""))})
+        rows.sort(key=lambda r: r["last_activity"] or "", reverse=True)
+        return 200, {"items": rows, "configured": True, "reason": "", "synced_at": data.get("synced_at", "")}
+
+    def api_forum_sync(self, q: Request) -> tuple[int, Any]:
+        self.cfg.require_forum()
+        delta = run_sync(self.client(), self.ledger, self.cfg, download=False, actor=ACTOR)
+        return 200, {"summary": scrub(format_delta(delta))}
+
+    def api_logs(self, q: Request) -> tuple[int, Any]:
+        try:
+            limit = max(1, min(int(q.query.get("limit", "200")), 1000))
+        except ValueError:
+            raise ApiError(400, "limit must be a number") from None
+        events = self.ledger.read_events(limit)
+        return 200, {"items": scrub_obj(list(reversed(events)))}
+
+    # ---- settings
+    def api_settings(self, q: Request) -> tuple[int, Any]:
+        bot_id = self.runtime.status().get("bot_id") or ""
+        if not bot_id and self.token_state()["set"]:
+            try:
+                bot_id = self.bot_id()
+            except (ApiError, HearbackError):
+                bot_id = ""
+        invite = ""
+        if bot_id:
+            invite = ("https://discord.com/oauth2/authorize?client_id=%s&scope=bot&permissions=%d"
+                      % (urllib.parse.quote(bot_id), INVITE_PERMISSIONS))
+        return 200, {"token": self.token_state(), "port": self.port, "bot_id": bot_id, "invite_url": invite,
+                     "portal_url": PORTAL_URL, "hourly_cap": self.cfg.swlink_hourly_cap, "version": __version__}
+
+    def api_token(self, q: Request) -> tuple[int, Any]:
+        tok = str(q.body.get("token") or "").strip()
+        if tok.lower().startswith("bot "):
+            tok = tok[4:].strip()
+        if not tok or len(tok) > 300 or any(c.isspace() for c in tok):
+            raise ApiError(400, "the token is empty or contains spaces")
+        path = self.cfg.token_path
+        ensure_data_dir(path.parent)
+        atomic_write_text(path, tok + "\n")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        register_secret(tok)
+        self._bot_id = ""
+        self._dir_cache = None
+        self.ledger.event(ACTOR, "token_update", None, None)
+        return 200, {"set": True, "source": self.token_state()["source"]}
+
+
+# ---------------------------------------------------------------- HTTP layer
+
+class _Server(ThreadingHTTPServer):
+    allow_reuse_address = False      # a busy port must stay busy (SO_REUSEADDR would share it on Windows)
+    daemon_threads = True
+    app: App
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server: _Server
+    server_version = "SWLink"
+    sys_version = ""
+
+    def log_message(self, format: str, *args: Any) -> None:   # silent: nothing about requests is logged
+        pass
+
+    # ---- responses
+    def _send(self, status: int, body: bytes, ctype: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, status: int, obj: Any) -> None:
+        self._send(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _error(self, status: int, message: str) -> None:
+        self._json(status, {"error": message})
+
+    # ---- request handling
+    def _host_ok(self) -> bool:
+        port = self.server.app.port
+        return (self.headers.get("Host") or "") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin")
+        port = self.server.app.port
+        return origin is None or origin in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port)
+
+    def _handle(self, method: str) -> None:
+        if not self._host_ok() or not self._origin_ok():
+            return self._error(403, "forbidden host")
+        parts = urllib.parse.urlsplit(self.path)
+        if parts.path.startswith("/api/"):
+            return self._api(method, parts)
+        if method not in ("GET", "HEAD"):
+            return self._error(405, "method not allowed")
+        self._static(parts.path)
+
+    def _api(self, method: str, parts: urllib.parse.SplitResult) -> None:
+        app = self.server.app
+        sent = (self.headers.get(KEY_HEADER) or "").encode("utf-8")
+        if not hmac.compare_digest(sent, app.secret.encode("utf-8")):
+            return self._error(403, "forbidden")
+        body: dict = {}
+        if method in ("POST", "PUT", "DELETE"):
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return self._error(415, "Content-Type must be application/json")
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._error(400, "bad Content-Length")
+            if n > MAX_BODY:
+                return self._error(413, "body too large")
+            raw = self.rfile.read(n) if n else b""
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+            except ValueError:
+                return self._error(400, "body is not valid JSON")
+            if not isinstance(body, dict):
+                return self._error(400, "body must be a JSON object")
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(parts.query).items()}
+        try:
+            status, obj = app.dispatch(method, parts.path, query, body)
+        except ApiError as e:
+            return self._error(e.status, e.message)
+        except HearbackError as e:
+            return self._error(400, scrub(str(e))[:600])
+        except Exception as e:   # never leak internals (or secrets inside them)
+            if os.environ.get("HEARBACK_DEBUG"):
+                import traceback
+                traceback.print_exc()
+            return self._error(500, "internal error: %s" % type(e).__name__)
+        self._json(status, scrub_obj(obj))
+
+    def _static(self, path: str) -> None:
+        rel = urllib.parse.unquote(path)
+        if "\x00" in rel or "\\" in rel or ".." in rel.split("/"):
+            return self._error(404, "not found")
+        rel = rel.lstrip("/") or "index.html"
+        target = (STATIC_DIR / rel).resolve()
+        if STATIC_DIR.resolve() not in target.parents or not target.is_file() or target.suffix not in MIME:
+            return self._error(404, "not found")
+        self._send(200, target.read_bytes(), MIME[target.suffix])
+
+    def do_GET(self) -> None: self._handle("GET")
+    def do_HEAD(self) -> None: self._handle("HEAD")
+    def do_POST(self) -> None: self._handle("POST")
+    def do_PUT(self) -> None: self._handle("PUT")
+    def do_DELETE(self) -> None: self._handle("DELETE")
+
+
+def create_server(cfg: Config, port: int = DEFAULT_PORT, **app_kw: Any) -> _Server:
+    """Bind 127.0.0.1:<port> (any free port if it is busy or 0) and attach a fresh App. Not serving yet."""
+    srv: _Server | None = None
+    for p in ([port, 0] if port else [0]):
+        try:
+            srv = _Server(("127.0.0.1", p), _Handler)
+            break
+        except OSError:
+            continue
+    if srv is None:
+        raise HearbackError("could not open a local port")
+    app = App(cfg, **app_kw)
+    app.port = srv.server_address[1]
+    srv.app = app
+    return srv
+
+
+def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
+    srv = create_server(cfg, port)
+    app = srv.app
+    url = "http://127.0.0.1:%d/#k=%s" % (app.port, app.secret)
+    print("SWLink is running. Open this link (it carries this run's key):\n  %s\nPress Ctrl+C to stop." % url,
+          flush=True)
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.runtime.stop()
+        srv.server_close()
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="swlink", description="SWLink: web console and chat bot for Hearback.")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="local port (0 or busy: pick a free one)")
+    ap.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    ap.add_argument("--config", help="path to hearback.toml (default: search upwards)")
+    args = ap.parse_args(list(argv) if argv is not None else None)
+    setup_stdio()
+    try:
+        return run(load_config(args.config), args.port, not args.no_browser)
+    except HearbackError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

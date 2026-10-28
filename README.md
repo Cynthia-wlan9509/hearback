@@ -113,6 +113,39 @@ human approves it.
 The workflow an agent should follow is in [integrations/AGENT_PLAYBOOK.md](integrations/AGENT_PLAYBOOK.md)
 (also packaged as a Claude Code skill and an AGENTS.md snippet for Codex).
 
+## SWLink: web console and chat bot
+
+SWLink is an optional, opt-in part of Hearback: a local web page plus an always-on chat bot for your Discord
+server. You choose which servers, channels and DMs the bot answers in, which **agent** (system prompt) answers,
+which **LLM** (your own API keys: Anthropic, OpenAI, DeepSeek, or any OpenAI- or Anthropic-compatible relay), and
+whether it is **off**, **drafts for your approval**, or **replies automatically**. The same page shows the
+approval queue and the bug-forum ledger.
+
+```
+pip install -e ".[all]"        # or pick extras: llm, bot, keyring, mcp
+hearback web                   # also: swlink. Opens http://127.0.0.1:8765/ in your browser
+```
+
+First run: **Settings** (paste the bot token, follow the Developer Portal steps, use the invite link) → **LLM**
+(add a profile and key, press Test) → **Channel rules** (pick a channel, choose a mode) → **Dashboard** → Start.
+`hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
+
+Safety model:
+
+- Everything starts **off**. Auto reply is chosen per channel (or per DM default), asks for confirmation, and is
+  capped per hour (`[swlink] hourly_cap`, default 60); past the cap the bot drafts instead.
+- **Draft** mode puts the model's reply in the normal approval queue as `agent:swlink`. A person approves it in the
+  console (`human:web`) and sends it; the existing rules (agents cannot approve or send) still apply.
+- The bot only works in servers it was invited to, through the official bot API. Selfbots (running a normal user
+  account as a bot) are against Discord's rules and are not supported.
+- API keys live in the OS keyring (service `hearback-swlink`), or in `HEARBACK_LLM_KEY_<PROFILE ID>` environment
+  variables. They are never written to `.hearback/llm.json`, logs, events or any web response. The bot token is
+  write-only in the console too.
+- The page is served on `127.0.0.1` only, behind a per-run secret in the link, with a Host check, a strict
+  content-security policy and no external requests. Discord text reaches the model fenced as untrusted data, and
+  every outgoing message disables mentions.
+- Recent messages the bot sees are kept in `.hearback/inbox.jsonl` (gitignored, last 5000 lines).
+
 ## Safety model
 
 What is enforced, and by what:
@@ -139,7 +172,7 @@ Human-only tools write directly by design: `hearback editor` (edit/delete the bo
 
 ## Status
 
-v0.1 — pull-based (no always-on gateway bot), Discord forum channels only. Issues and PRs welcome.
+v0.2 (in development): the core is pull-based and runs when you run it; SWLink adds an optional always-on chat bot. Discord forum channels for the bug desk. Issues and PRs welcome.
 
 ## License
 

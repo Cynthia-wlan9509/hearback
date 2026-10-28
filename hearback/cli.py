@@ -391,6 +391,11 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return run_demo(args.lang, keep=args.keep)
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    from hearback.web import server   # stdlib only; the LLM and bot extras load lazily inside
+    return server.run(load_config(getattr(args, "config", None)), args.port, not args.no_browser)
+
+
 def cmd_mcp(args: argparse.Namespace) -> int:
     from hearback import mcp_server  # the SDK itself is imported lazily inside, with an install hint
     return mcp_server.main(getattr(args, "config", None), getattr(args, "actor", None), args.fake_seed)
@@ -556,6 +561,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("demo", cmd_demo, "run the whole loop offline against a fake Discord")
     p.add_argument("--lang", choices=["en", "zh"], default="en")
     p.add_argument("--keep", action="store_true", help="keep the temporary workspace and print its path")
+
+    p = add("web", cmd_web, "SWLink: local web console and chat bot (opens in your browser)")
+    p.add_argument("--port", type=int, default=8765, help="local port (0 or busy: pick a free one)")
+    p.add_argument("--no-browser", action="store_true", help="do not open the browser")
 
     p = add("mcp", cmd_mcp, "run the MCP server (stdio) for coding agents; actor from --as or $HEARBACK_ACTOR "
                             "(default agent:mcp)")
