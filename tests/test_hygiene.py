@@ -115,7 +115,7 @@ def test_pyproject_matches_the_spec():
     assert set(extras) == {"mcp", "images", "llm", "bot", "keyring", "all", "dev"}
     assert set(extras["all"]) >= set(extras["mcp"] + extras["images"] + extras["llm"] + extras["bot"] + extras["keyring"])
     assert meta["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "hearback.__version__"}
-    assert hearback.__version__ == "0.2.0.dev0"
+    assert hearback.__version__ == "0.2.0"
     lic = (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert lic.startswith("MIT License") and "Copyright (c) 2026 Cynthia-wlan9509 and contributors" in lic
 
@@ -127,7 +127,7 @@ def test_gitignore_covers_the_basics():
 
 def test_version_flag_runs_as_a_module():
     r = subprocess.run([sys.executable, "-m", "hearback", "--version"], cwd=ROOT, capture_output=True, timeout=20)
-    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.2.0.dev0"
+    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.2.0"
 
 
 def test_sources_use_lf_line_endings():

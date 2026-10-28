@@ -392,6 +392,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_web(args: argparse.Namespace) -> int:
+    if args.demo:
+        from hearback.webdemo import run_demo   # fake data, temporary folder, no network
+        return run_demo(args.lang, args.port, not args.no_browser)
     from hearback.web import server   # stdlib only; the LLM and bot extras load lazily inside
     return server.run(load_config(getattr(args, "config", None)), args.port, not args.no_browser)
 
@@ -565,6 +568,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("web", cmd_web, "SWLink: local web console and chat bot (opens in your browser)")
     p.add_argument("--port", type=int, default=8765, help="local port (0 or busy: pick a free one)")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    p.add_argument("--demo", action="store_true", help="try the console on fake data: no Discord, no network, "
+                                                       "nothing saved (for screenshots and recordings)")
+    p.add_argument("--lang", choices=["en", "zh"], default="en", help="language of the demo data (with --demo)")
 
     p = add("mcp", cmd_mcp, "run the MCP server (stdio) for coding agents; actor from --as or $HEARBACK_ACTOR "
                             "(default agent:mcp)")

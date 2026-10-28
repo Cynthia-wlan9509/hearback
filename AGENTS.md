@@ -25,7 +25,7 @@ hearback demo --lang zh
 - `cli.py` argparse front end; `mcp_server.py` MCP tools; `editor.py` Tk GUI; `demo.py` the scripted demo
 - SWLink (web console + chat bot, DESIGN 3.10): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
   `agents.py` system-prompt agents; `review.py` AI review of forum threads (`triage.ai`, fix list, background job); `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
-  `web/server.py` loopback JSON API + static page; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
+  `web/server.py` loopback JSON API + static page; `webdemo.py` = `web --demo`; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
 - SWLink supporters (DESIGN 3.10, Afdian orders to a Discord role): `supporters.py` Afdian client, `supporters.json` store,
   `Supporters.handle_order` brain, `SupporterBot` (REST role grants, DM replies, retry loop); tests use `FakeAfdian` in `fake.py`
 

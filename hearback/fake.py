@@ -94,6 +94,7 @@ class FakeDiscord:
         self.bot = self._user("Hearback Bot", bot=True)
         self.users: dict[str, dict] = {self.bot["id"]: self.bot}
         self.guild_id = self.new_id()
+        self.guild_name = "Fake Guild"
         self.roles: dict[str, dict] = {self.guild_id: {"id": self.guild_id, "name": "@everyone", "position": 0,
                                                        "managed": False, "permissions": "0"}}
         self.members: dict[str, dict] = {self.bot["id"]: {"user": self.bot, "nick": None, "roles": []}}
@@ -297,7 +298,7 @@ class FakeDiscord:
         if method == "GET" and path == "/users/@me":
             return self.bot
         if method == "GET" and path == "/users/@me/guilds":
-            return [{"id": self.guild_id, "name": "Fake Guild"}]
+            return [{"id": self.guild_id, "name": self.guild_name}]
         m = re.fullmatch(r"/guilds/(\d+)/channels", path)
         if method == "GET" and m:
             if m.group(1) != self.guild_id:

@@ -128,4 +128,4 @@ def test_installed_console_script_prints_the_version():
     if not exe.exists():
         pytest.skip("hearback is not pip-installed in this environment")
     r = subprocess.run([str(exe), "--version"], capture_output=True, timeout=30)
-    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.2.0.dev0"
+    assert r.returncode == 0 and r.stdout.decode().strip() == "hearback 0.2.0"

@@ -32,6 +32,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .top .sub { color: var(--sub); margin-top: 2px; }
 .top-right { display: flex; align-items: center; gap: 10px; }
 .view { min-width: 0; }
+.demo-banner { background: #FBF3E1; border: 1px solid #EBD9A8; border-radius: 0 0 10px 10px; color: #7A5B14; padding: 7px 16px; text-align: center; font-weight: 600; }
 
 /* controls */
 .btn { border: 1px solid var(--line); background: var(--card); padding: 6px 14px; border-radius: 8px; cursor: pointer; }

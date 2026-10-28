@@ -1,13 +1,35 @@
-# Hearback
+# SWLink
 
-**Every player who reports a bug hears back.**
+**A local console and Discord bot for small game communities. The AI drafts; you approve.**
 
-Hearback is an agent-native, human-approved bug desk for **Discord forum channels**. AI coding agents
-(Claude Code, OpenAI Codex, Agents SDK apps…) triage the reports through a shared ledger and an MCP
+SWLink runs on your own computer and opens in your browser. One Discord bot, five jobs:
+
+- **Bug forum**: sync the forum, let an AI size up each report (what broke, where to look, a draft reply),
+  then approve replies and tags in one place. When the fix ships, every reporter hears back.
+- **Chat**: per channel and for DMs, choose ignore, draft only (you approve), or auto reply with an hourly cap.
+- **Supporters**: people who paid on Afdian (爱发电) DM the bot their order number and get a supporter role.
+  Amounts stay private.
+- **Bot messages**: fix a typo in, or delete, anything the bot posted.
+- **Agents**: Claude Code, Codex and other MCP clients can triage and propose, but never send.
+
+![The Bug forum page in demo mode](docs/images/swlink-bug-forum.jpg)
+
+Try it without Discord. Demo mode runs on a fake server, fake orders and a fake model; nothing connects anywhere:
+
+```
+pip install -e ".[all]"
+swlink --demo            # or: hearback web --demo --lang zh
+```
+
+[中文说明](README.zh-CN.md) · [用户手册（中文）](docs/swlink-manual.zh-CN.md) · [Design](docs/DESIGN.md) ·
+[How it compares](docs/LANDSCAPE.md) · [Agent playbook](integrations/AGENT_PLAYBOOK.md)
+
+## Hearback: the bug desk underneath
+
+**Every player who reports a bug hears back.** SWLink is built on Hearback, an agent-native, human-approved bug
+desk for **Discord forum channels**. AI coding agents triage the reports through a shared ledger and an MCP
 server; a human approves every public word; and when the fix ships, every reporter gets told — in their
-thread, for the build they actually run.
-
-[中文说明](README.zh-CN.md) · [Design](docs/DESIGN.md) · [How it compares](docs/LANDSCAPE.md) · [Agent playbook](integrations/AGENT_PLAYBOOK.md)
+thread, for the build they actually run. Everything below also works from the command line without the console.
 
 ```
  forum post ─▶ sync (deltas only) ─▶ agents triage + cluster ─▶ proposals ─▶ human ✅ ─▶ bot sends ─▶ re-read verify
@@ -115,6 +137,8 @@ The workflow an agent should follow is in [integrations/AGENT_PLAYBOOK.md](integ
 
 ## SWLink: web console and chat bot
 
+![The Supporters page in demo mode](docs/images/swlink-supporters.jpg)
+
 SWLink is an optional, opt-in part of Hearback: a local web page plus an always-on chat bot for your Discord
 server. You choose which servers, channels and DMs the bot answers in, which **agent** (system prompt) answers,
 which **LLM** (your own API keys: Anthropic, OpenAI, DeepSeek, or any OpenAI- or Anthropic-compatible relay), and
@@ -131,6 +155,10 @@ hearback web                   # also: swlink. Opens http://127.0.0.1:8765/ in y
 First run: **Settings** (paste the bot token, follow the Developer Portal steps, use the invite link) → **LLM**
 (add a profile and key, press Test) → **Channel rules** (pick a channel, choose a mode) → **Dashboard** → Start.
 `hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
+
+Want to look around first? `hearback web --demo` (add `--lang zh` for Chinese data) opens the same console on made-up
+data: a fake server, forum, queue and supporters. It needs no Discord, no key and no network, saves nothing, and its
+temporary folder disappears when you stop it. Use it to try the pages, and for screenshots and screen recordings.
 
 Safety model:
 

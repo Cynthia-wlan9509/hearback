@@ -161,7 +161,14 @@ function renderShell() {
   }
   side.appendChild(h("div", { class: "side-foot" }, "v" + ((STATUS && STATUS.version) || "")));
   renderTop();
+  renderDemo();
   renderHowto();
+}
+/* demo mode (fake data): a banner above every page */
+function renderDemo() {
+  const on = !!(STATUS && STATUS.demo);
+  $("demo").classList.toggle("hidden", !on);
+  $("demo").textContent = on ? t("demo.banner") : "";
 }
 function botHint(b) {
   const r = b.reason || "";
@@ -224,6 +231,7 @@ function toggleLang() {
 async function refreshStatus() {
   STATUS = await api("GET", "/api/status");
   renderTop();
+  renderDemo();
   const v = document.querySelector(".side-foot");
   if (v) v.textContent = "v" + STATUS.version;
   return STATUS;
@@ -1142,7 +1150,9 @@ const PAGES = { dashboard: pageDashboard, conversations: pageConversations, appr
 
 /* ---------- boot ---------- */
 function boot() {
-  const saved = store("get", "swlink.lang");
+  const forced = /[#&]lang=(zh|en)/.exec(location.hash);          // the demo link carries its language
+  if (forced) store("setL", "swlink.lang", forced[1]);
+  const saved = forced ? forced[1] : store("get", "swlink.lang");
   LANG = saved === "zh" || saved === "en" ? saved : ((navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en");
   document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
   const m = /[#&]k=([^&]+)/.exec(location.hash);
@@ -1154,6 +1164,7 @@ function boot() {
   if (!KEY) { showLocked(); return; }
   $("app").classList.remove("hidden");
   window.addEventListener("hashchange", renderPage);
+  refreshStatus().catch(() => {});
   renderPage();
   setInterval(() => { if (!document.hidden) refreshStatus().catch(() => {}); }, 5000);
 }

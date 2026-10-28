@@ -1,12 +1,31 @@
-# Hearback（回音）
+# SWLink
 
-**每个报 bug 的玩家，都能收到回音。**
+**给小型游戏社区用的本地控制台 + Discord 机器人。AI 起草，你来拍板。**
 
-Hearback 是给 **Discord 论坛频道**用的「AI 分诊 + 人工把关」bug 工作台：多个 AI 编程助手（Claude Code、
-OpenAI Codex、Agents SDK 应用……）通过共享台账和 MCP 服务一起分诊报告；所有公开发言都要人批准；
-修复发布后，每个报告人都会在自己的帖子里收到「哪个版本修好了、怎么更新」的回复。
+SWLink 跑在你自己的电脑上，在浏览器里打开。一个机器人，管五件事：
 
-[English](README.md) · [设计文档](docs/DESIGN.md) · [同类项目对比](docs/LANDSCAPE.md) · [Agent 使用手册](integrations/AGENT_PLAYBOOK.md)
+- **Bug 论坛**：同步帖子，让 AI 先看一遍（什么问题、该去哪查、回复草稿），你在一个地方批准回复和标签。修好发版后，每个报告人都会收到回音。
+- **聊天**：每个频道和私信单独选：不理、只起草（你批准）、自动回复（有每小时上限）。
+- **支持者**：在爱发电付过款的人私信订单号，自动拿到支持者身份组。金额不公开。
+- **机器人消息**：机器人发过的消息，随时改字或删除。
+- **AI 编程助手**：Claude Code、Codex 等 MCP 客户端可以分诊、起草，但不能直接发。
+
+![演示模式下的 Bug 论坛页](docs/images/swlink-bug-forum.jpg)
+
+不接 Discord 也能先试：演示模式用假服务器、假订单、假模型，什么都不会连出去。
+
+```
+pip install -e ".[all]"
+swlink --demo --lang zh
+```
+
+[English](README.md) · [用户手册](docs/swlink-manual.zh-CN.md) · [设计文档](docs/DESIGN.md) · [同类项目对比](docs/LANDSCAPE.md) · [Agent 使用手册](integrations/AGENT_PLAYBOOK.md)
+
+## Hearback：底下的 bug 工作台
+
+**每个报 bug 的玩家，都能收到回音。** SWLink 建在 Hearback 上：给 **Discord 论坛频道**用的「AI 分诊 + 人工把关」
+bug 工作台。多个 AI 编程助手通过共享台账和 MCP 服务一起分诊；所有公开发言都要人批准；修复发布后，每个报告人
+都会在自己的帖子里收到「哪个版本修好了、怎么更新」的回复。下面这些不开控制台、只用命令行也能用。
 
 ## 解决什么问题
 
@@ -64,6 +83,8 @@ hearback demo --lang zh
 
 ## SWLink：网页控制台 + 聊天机器人
 
+![演示模式下的支持者页](docs/images/swlink-supporters.jpg)
+
 SWLink 是 Hearback 里**可选、需要自己开启**的部分：一个本地网页，加一个常驻的聊天机器人。你在网页里决定机器人在哪些服务器、
 频道、私信里回答，用哪个**智能体**（系统提示词），用哪个**大模型**（你自己的 API 密钥：Anthropic、OpenAI、DeepSeek，
 或任何兼容 OpenAI / Anthropic 接口的中转站），以及模式是**关闭**、**起草后等你批准**还是**自动回复**。
@@ -76,6 +97,8 @@ hearback web                   # 也可以用 swlink。浏览器会打开 http:/
 
 第一次用：**设置**（粘贴机器人令牌，照开发者门户的步骤做，用邀请链接）→ **模型**（添加配置和密钥，点测试）→
 **频道规则**（选频道、选模式）→ **仪表盘** → 启动。`hearback web --no-browser --port 0` 只打印链接、自动选空闲端口。
+
+想先看看效果？运行 `hearback web --demo`（要中文数据就加 `--lang zh`），会打开同一个控制台，里面全是编出来的数据：假的服务器、论坛、待审批和支持者。不需要 Discord、不需要密钥、不联网，什么都不保存，停止后临时文件夹自动删除。适合先试用各个页面，也适合截图和录屏。
 
 安全模型：
 

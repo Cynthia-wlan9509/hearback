@@ -103,8 +103,9 @@ class App:
     def __init__(self, cfg: Config, *, client_factory: Callable[[], DiscordClient] | None = None,
                  llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
                  clock: Callable[[], float] = time.time, supporters_store: SupporterStore | None = None,
-                 afdian_opener: Callable[..., Any] | None = None):
+                 afdian_opener: Callable[..., Any] | None = None, demo: bool = False):
         self.cfg = cfg
+        self.demo = demo                 # fake data: tokens and keys are never saved
         self.secret = secret or secrets.token_urlsafe(24)
         self.port = 0
         self.clock = clock
@@ -133,6 +134,11 @@ class App:
         t = self.cfg.token()
         register_secret(t)
         return t
+
+    def _no_secrets(self) -> None:
+        """Demo mode saves no token or key (not even a fake one): a real one pasted while recording must not stay."""
+        if self.demo:
+            raise ApiError(400, "demo_locked")
 
     def client(self) -> DiscordClient:
         try:
@@ -323,7 +329,7 @@ class App:
         except SupporterError:
             supporters = {"claims": 0, "retries": 0, "damaged": True}
         return 200, {
-            "version": __version__, "bot": st, "guilds": len(guilds),
+            "version": __version__, "demo": self.demo, "bot": st, "guilds": len(guilds),
             "pending": len(self.queue.list("pending")), "auto_today": self.bot.auto_today(),
             "forum_threads": len(self.ledger.load()["threads"]), "forum_configured": bool(self.cfg.forum_id),
             "forum_to_review": len(review.pending_threads(self.ledger.load())) if self.cfg.forum_id else 0,
@@ -480,6 +486,8 @@ class App:
     def api_llm_create(self, q: Request) -> tuple[int, Any]:
         b = dict(q.body)
         key = str(b.pop("key", "") or "")
+        if key:
+            self._no_secrets()
         prof = self.llm.add_profile(b, preset=str(b.get("preset") or ""))
         if key:
             try:
@@ -496,6 +504,7 @@ class App:
         return 200, {"deleted": q.groups[0]}
 
     def api_llm_key(self, q: Request) -> tuple[int, Any]:
+        self._no_secrets()
         return 200, self.llm.set_key(q.groups[0], str(q.body.get("key") or ""))
 
     def api_llm_activate(self, q: Request) -> tuple[int, Any]:
@@ -727,6 +736,7 @@ class App:
         return 200, self._sup_overview()
 
     def api_sup_token(self, q: Request) -> tuple[int, Any]:
+        self._no_secrets()
         self.supporters_store.set_token(str(q.body.get("token") or ""))
         self.ledger.event(ACTOR, "supporters_token_update", None, None)
         return 200, {"token_set": True}
@@ -911,6 +921,7 @@ class App:
         return 200, {"guild_id": self.cfg.guild_id, "forum_id": self.cfg.forum_id}
 
     def api_token(self, q: Request) -> tuple[int, Any]:
+        self._no_secrets()
         tok = str(q.body.get("token") or "").strip()
         if tok.lower().startswith("bot "):
             tok = tok[4:].strip()
@@ -1059,10 +1070,10 @@ def create_server(cfg: Config, port: int = DEFAULT_PORT, **app_kw: Any) -> _Serv
     return srv
 
 
-def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
-    srv = create_server(cfg, port)
+def serve(srv: _Server, cfg: Config, open_browser: bool = True, url_extra: str = "") -> int:
+    """Serve a bound server until Ctrl+C; prints the link that carries this run's key."""
     app = srv.app
-    url = "http://127.0.0.1:%d/#k=%s" % (app.port, app.secret)
+    url = "http://127.0.0.1:%d/#k=%s%s" % (app.port, app.secret, url_extra)
     print("SWLink is running. Open this link (it carries this run's key):\n  %s\nPress Ctrl+C to stop." % url,
           flush=True)
     app.supporter_bot.start()
@@ -1085,14 +1096,23 @@ def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int
     return 0
 
 
+def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
+    return serve(create_server(cfg, port), cfg, open_browser)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="swlink", description="SWLink: web console and chat bot for Hearback.")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="local port (0 or busy: pick a free one)")
     ap.add_argument("--no-browser", action="store_true", help="do not open the browser")
     ap.add_argument("--config", help="path to hearback.toml (default: search upwards)")
+    ap.add_argument("--demo", action="store_true", help="try the console on fake data: no Discord, no network")
+    ap.add_argument("--lang", choices=["en", "zh"], default="en", help="language of the demo data (with --demo)")
     args = ap.parse_args(list(argv) if argv is not None else None)
     setup_stdio()
     try:
+        if args.demo:
+            from hearback.webdemo import run_demo
+            return run_demo(args.lang, args.port, not args.no_browser)
         return run(load_config(args.config), args.port, not args.no_browser)
     except HearbackError as e:
         print("error: %s" % e, file=sys.stderr)
