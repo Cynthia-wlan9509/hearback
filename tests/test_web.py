@@ -677,3 +677,9 @@ def test_the_chat_page_fills_the_window_and_the_composer_cannot_fall_off():
     assert ".main.fill .view { flex: 1; min-height: 0;" in css and ".main.fill .conv { flex: 1; height: auto; min-height: 0; }" in css
     assert 'classList.toggle("fill", PAGE === "conversations")' in js
     assert "scrollIntoView" not in js                      # new messages only scroll their own box
+
+
+def test_approvals_page_has_an_approve_all_that_still_needs_send():
+    js = (Path(web.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+    body = js[js.index("async function approveAll()"):js.index("if (!pend.items.length && !appr.items.length")]
+    assert "confirmBox(" in body and '"/approve"' in body and "/api/queue/send" not in body   # approve only; sending stays a separate click

@@ -464,8 +464,23 @@ async function pageApprovals() {
       renderPage();
     } catch (e) { fail(e); }
   }
+  async function approveAll() {
+    const counts = {};
+    pend.items.forEach((p) => { counts[p.kind] = (counts[p.kind] || 0) + 1; });
+    const summary = Object.entries(counts).map(([k, n]) => (hasKey("appr.kind." + k) ? t("appr.kind." + k) : k) + " " + n).join(" · ");
+    if (!(await confirmBox(t("appr.approveAllTitle", { n: pend.items.length }), t("appr.approveAllText", { s: summary }), t("appr.approveAll"), false))) return;
+    let done = 0;
+    const errors = [];
+    for (const p of pend.items) {           // one by one through the same route as the single button
+      try { await api("POST", "/api/queue/" + p.id + "/approve", {}); done++; } catch (e) { errors.push(p.id + ": " + (e.message || e)); }
+    }
+    toast(t("appr.approvedN", { n: done }) + (errors.length ? " · " + errors.join("; ") : ""), errors.length > 0);
+    renderPage();
+  }
   if (!pend.items.length && !appr.items.length && !failed.items.length) return empty(t("appr.empty.title"), t("appr.empty.text"), goBtn("conversations", t("appr.goChat")));
-  wrap.appendChild(h("div", { class: "row end" }, h("button", { class: "btn primary", disabled: !appr.items.length, onclick: sendAll }, t("appr.send") + " (" + appr.items.length + ")")));
+  wrap.appendChild(h("div", { class: "row end" },
+    pend.items.length > 1 ? h("button", { class: "btn", onclick: approveAll }, t("appr.approveAll") + " (" + pend.items.length + ")") : null,
+    h("button", { class: "btn primary", disabled: !appr.items.length, onclick: sendAll }, t("appr.send") + " (" + appr.items.length + ")")));
   wrap.appendChild(h("h2", null, t("appr.pending") + " (" + pend.items.length + ")"));
   pend.items.forEach((p) => wrap.appendChild(card(p, false)));
   if (appr.items.length) { wrap.appendChild(h("h2", null, t("appr.approved"))); appr.items.forEach((p) => wrap.appendChild(card(p, true))); }
