@@ -20,16 +20,27 @@ KEYRING_SERVICE = "hearback-swlink"
 ENV_PREFIX = "HEARBACK_LLM_KEY_"
 PROTOCOLS = ("openai", "anthropic")
 RESERVED_IDS = ("settings", "presets")
-DEFAULT_MAX_TOKENS = 1024
+DEFAULT_MAX_TOKENS = 2048
+DEFAULT_MAX_CONCURRENT = 2
+MAX_CONCURRENT_LIMIT = 16
 TEST_PROMPT = "Reply with OK."
+TEST_MAX_TOKENS = 512                # models that think first spend small budgets on thinking and answer ""
+EMPTY_TEXT_ERROR = ("The model answered with empty text. Models that think first need more output tokens: "
+                    "raise Max output tokens (2048+) or pick another model.")
+OUT_OF_TOKENS_ERROR = "ran out of output tokens before answering; raise Max output tokens"
+RETRY_STATUSES = (429, 503)          # a relay's concurrency limit / "no route available, retry later"
+RETRY_WAITS = (2.0, 5.0)             # seconds before the 1st and the 2nd retry when no Retry-After came back
+MAX_RETRY_WAIT = 60.0
 
 
 class LLMError(HearbackError):
-    """A model call failed (the message is already scrubbed of keys). `status` is the HTTP status when known."""
+    """A model call failed (the message is already scrubbed of keys). `status` is the HTTP status when known,
+    `retry_after` the seconds a Retry-After header asked for."""
 
-    def __init__(self, message: str = "", status: int | None = None):
+    def __init__(self, message: str = "", status: int | None = None, retry_after: float | None = None):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 # ---------------------------------------------------------------- secret scrubbing
@@ -138,7 +149,10 @@ class AnthropicProvider(Provider):
         resp = self.client.messages.create(model=self.model, max_tokens=max_tokens, system=system, messages=msgs)
         if getattr(resp, "stop_reason", None) == "refusal":
             raise LLMError("model refused")
-        return "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text").strip()
+        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text").strip()
+        if not text and getattr(resp, "stop_reason", None) == "max_tokens":
+            raise LLMError(OUT_OF_TOKENS_ERROR)
+        return text
 
 
 class OpenAIProvider(Provider):
@@ -163,7 +177,11 @@ class OpenAIProvider(Provider):
                 raise
             r = self.client.chat.completions.create(model=self.model, messages=msgs,
                                                     max_completion_tokens=max_tokens)
-        return (r.choices[0].message.content or "").strip()
+        choice = r.choices[0]
+        text = (choice.message.content or "").strip()
+        if not text and getattr(choice, "finish_reason", None) == "length":
+            raise LLMError(OUT_OF_TOKENS_ERROR)
+        return text
 
 
 ProviderFactory = Callable[[Mapping[str, Any], str, float], Provider]
@@ -177,6 +195,26 @@ def set_provider_factory(protocol: str, factory: ProviderFactory | None) -> None
     _FACTORIES[protocol] = factory or {"anthropic": AnthropicProvider, "openai": OpenAIProvider}[protocol]
 
 
+def _retry_after(e: Exception) -> float | None:
+    """Seconds from a Retry-After header (or a `retry_after` attribute) on an SDK error, else None."""
+    cands: list[Any] = [getattr(e, "retry_after", None)]
+    for holder in (getattr(e, "response", None), e):
+        headers = getattr(holder, "headers", None)
+        if headers is not None:
+            try:
+                cands.append(headers.get("retry-after") or headers.get("Retry-After"))
+            except Exception:
+                pass
+    for c in cands:
+        try:
+            v = float(c)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= v < float("inf"):
+            return v
+    return None
+
+
 def complete(profile: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, Any]],
              max_tokens: int | None = None, *, key: str, timeout: float = 60) -> str:
     """One call to one profile. Raises LLMError (scrubbed) on any failure. `key` is the raw API key."""
@@ -184,13 +222,13 @@ def complete(profile: Mapping[str, Any], system: str, messages: Sequence[Mapping
         prov = _FACTORIES[profile["protocol"]](profile, key, timeout)
         return prov.complete(system, messages, int(max_tokens or profile.get("max_tokens") or DEFAULT_MAX_TOKENS))
     except LLMError as e:
-        raise LLMError(scrub(e), e.status) from None
+        raise LLMError(scrub(e), e.status, e.retry_after) from None
     except ImportError:
         raise LLMError("the %s SDK is not installed: pip install \"hearback-desk[llm]\"" % profile["protocol"]) from None
     except Exception as e:
         status = getattr(e, "status_code", None)
         raise LLMError("%s: %s" % (type(e).__name__, scrub(e)[:300]),
-                       status if isinstance(status, int) else None) from None
+                       status if isinstance(status, int) else None, _retry_after(e)) from None
 
 
 # ---------------------------------------------------------------- the store
@@ -218,6 +256,8 @@ class LLMStore:
         self._lock = threading.RLock()
         self._calls: dict[str, deque[float]] = {}
         self._state: dict[str, dict] = {}     # id -> {status, error}
+        self._limited: dict[str, int] = {}    # id -> 429/503 answers since the last success
+        self._sems: dict[str, tuple[int, threading.BoundedSemaphore]] = {}
 
     # ---- file
     def load(self) -> dict:
@@ -320,6 +360,7 @@ class LLMStore:
             hint = k[-4:] if k else ""
         return {**{k: p.get(k) for k in ("id", "name", "protocol", "base_url", "model", "max_tokens", "enabled",
                                           "order")},
+                "max_concurrent": self._concurrency(p),
                 "key_set": bool(self.get_key(pid)), "key_hint": hint,
                 "calls_s": sum(1 for t in q if now - t < 1), "calls_min": sum(1 for t in q if now - t < 60),
                 "status": st.get("status", "untested"), "last_error": st.get("error", "")}
@@ -338,6 +379,11 @@ class LLMStore:
                 out["max_tokens"] = int(f["max_tokens"])
             except (TypeError, ValueError):
                 raise LLMError("max_tokens must be a number") from None
+        if "max_concurrent" in f:
+            try:
+                out["max_concurrent"] = int(f["max_concurrent"])
+            except (TypeError, ValueError):
+                raise LLMError("max_concurrent must be a number") from None
         if "enabled" in f:
             out["enabled"] = bool(f["enabled"])
         if out.get("protocol") not in PROTOCOLS:
@@ -354,12 +400,15 @@ class LLMStore:
             raise LLMError("this kind of relay needs a base URL")
         if not 1 <= int(out.get("max_tokens") or 0) <= 200000:
             raise LLMError("max_tokens must be between 1 and 200000")
+        if not 1 <= int(out.get("max_concurrent", DEFAULT_MAX_CONCURRENT)) <= MAX_CONCURRENT_LIMIT:
+            raise LLMError("max_concurrent must be between 1 and %d" % MAX_CONCURRENT_LIMIT)
         return out
 
     def add_profile(self, fields: Mapping[str, Any], preset: str = "") -> dict:
         with self._lock:
             d = self.load()
-            f = {"max_tokens": DEFAULT_MAX_TOKENS, "enabled": True, **fields}
+            f = {"max_tokens": DEFAULT_MAX_TOKENS, "max_concurrent": DEFAULT_MAX_CONCURRENT, "enabled": True,
+                 **fields}
             p = self._clean(f, preset=preset)
             base, n = _slug(p["name"]), 1
             ids = {x["id"] for x in d["profiles"]} | set(RESERVED_IDS)
@@ -440,9 +489,31 @@ class LLMStore:
             q = self._calls.setdefault(pid, deque(maxlen=600))
             q.append(self.clock())
 
-    def _note_result(self, pid: str, error: str = "") -> None:
+    def _note_result(self, pid: str, error: str = "", status: int | None = None) -> None:
         with self._lock:
+            if error and status in RETRY_STATUSES:
+                self._limited[pid] = self._limited.get(pid, 0) + 1
+                error = "%s [HTTP %d x%d since the last success]" % (error, status, self._limited[pid])
+            elif not error:
+                self._limited.pop(pid, None)
             self._state[pid] = {"status": "error" if error else "ok", "error": error}
+
+    @staticmethod
+    def _concurrency(p: Mapping[str, Any]) -> int:
+        try:
+            n = int(p.get("max_concurrent") or DEFAULT_MAX_CONCURRENT)
+        except (TypeError, ValueError):
+            n = DEFAULT_MAX_CONCURRENT
+        return min(max(n, 1), MAX_CONCURRENT_LIMIT)
+
+    def _slots(self, p: Mapping[str, Any]) -> threading.BoundedSemaphore:
+        """The profile's semaphore: at most `max_concurrent` provider calls in flight, whoever asks."""
+        n = self._concurrency(p)
+        with self._lock:
+            cur = self._sems.get(p["id"])
+            if cur is None or cur[0] != n:
+                cur = self._sems[p["id"]] = (n, threading.BoundedSemaphore(n))
+            return cur[1]
 
     # ---- calls
     def call_profile(self, p: Mapping[str, Any], system: str, messages: Sequence[Mapping[str, Any]],
@@ -454,12 +525,14 @@ class LLMStore:
             err = "no API key for %s (add one in the LLM page)" % p.get("name", pid)
             self._note_result(pid, err)
             raise LLMError(err)
-        self._note_call(pid)
+        slots = self._slots(p)
         try:
-            text = complete(p, system, messages, max_tokens, key=key,
-                            timeout=timeout or self.load()["timeout_s"])
+            with slots:                       # waiting for a slot is not a call; the clock starts inside
+                self._note_call(pid)
+                text = complete(p, system, messages, max_tokens, key=key,
+                                timeout=timeout or self.load()["timeout_s"])
         except LLMError as e:
-            self._note_result(pid, str(e))
+            self._note_result(pid, str(e), e.status)
             raise
         self._note_result(pid)
         return text
@@ -469,9 +542,12 @@ class LLMStore:
         p = self.get(profile_id)
         try:
             text = self.call_profile(p, "You are a connectivity test.", [{"role": "user", "content": TEST_PROMPT}],
-                                     max_tokens=16)
+                                     max_tokens=TEST_MAX_TOKENS)
         except LLMError as e:
             return {"ok": False, "error": str(e)}
+        if not text.strip():
+            self._note_result(profile_id, EMPTY_TEXT_ERROR)
+            return {"ok": False, "error": EMPTY_TEXT_ERROR}
         return {"ok": True, "text": scrub(text)[:200]}
 
     def candidates(self, prefer: str | None = None) -> list[dict]:
@@ -485,11 +561,21 @@ class LLMStore:
         return first + rest
 
 
+def _retry_wait(e: LLMError, attempt: int) -> float:
+    """Seconds to wait before retry number attempt + 1."""
+    if e.status in RETRY_STATUSES:
+        if e.retry_after is not None:
+            return min(e.retry_after, MAX_RETRY_WAIT)
+        return RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)]
+    return 0.5 * (attempt + 1)
+
+
 def complete_any(store: LLMStore, system: str, messages: Sequence[Mapping[str, Any]],
                  max_tokens: int | None = None, prefer: str | None = None) -> tuple[str, str]:
     """Answer with the active (or preferred) profile; with fallback on, try the other enabled ones in order.
 
-    Each profile gets 1 + retries attempts (a refusal or a missing key is not retried). Returns (text, profile_id).
+    Each profile gets 1 + retries attempts (a refusal or a missing key is not retried). After a 429 or 503 the wait
+    is the Retry-After the relay sent, else 2 s then 5 s. Returns (text, profile_id).
     """
     cands = store.candidates(prefer)
     if not cands:
@@ -507,5 +593,5 @@ def complete_any(store: LLMStore, system: str, messages: Sequence[Mapping[str, A
                 if "refused" in str(e) or str(e).startswith("no API key"):
                     break
                 if attempt < retries:
-                    store.sleep(0.5 * (attempt + 1))
+                    store.sleep(_retry_wait(e, attempt))
     raise LLMError("; ".join(errors)[:600], statuses[0] if len(set(statuses)) == 1 else None)

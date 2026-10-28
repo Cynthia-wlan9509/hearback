@@ -395,3 +395,32 @@ def test_one_failing_message_does_not_kill_the_connection(monkeypatch):
     asyncio.run_coroutine_threadsafe(mod.client.handlers["on_message"](m), rt._loop).result(3)
     assert rt.status()["state"] == "online"
     rt.stop()
+
+
+def test_runtime_snapshot_tells_what_the_bot_member_may_do_per_channel(monkeypatch):
+    mod = fake_discord()
+    monkeypatch.setitem(sys.modules, "discord", mod)
+    rt = BotRuntime(lambda: "tok_FAKE_TOKEN_000111", lambda m, b: None)
+    rt.start()
+    assert wait_for(rt, "online")
+    ch = rt.guilds()[0]["channels"][0]
+    assert ch["readable"] is None and ch["can_send"] is None          # this fake channel cannot tell: unknown, not "no"
+
+    ns = types.SimpleNamespace
+    me = ns(id=int(BOT))
+    perms = {"open": ns(view_channel=True, read_message_history=True, send_messages=True),
+             "no-history": ns(view_channel=True, read_message_history=False, send_messages=True),
+             "hidden": ns(view_channel=False, read_message_history=False, send_messages=False),
+             "read-only": ns(view_channel=True, read_message_history=True, send_messages=False)}
+
+    def chan(i, name):
+        return ns(id=100 + i, name=name, permissions_for=lambda member, name=name: perms[name] if member is me else None)
+    guild = mod.client.guilds[0]
+    guild.me, guild.text_channels = me, [chan(i, n) for i, n in enumerate(perms)]
+    asyncio.run_coroutine_threadsafe(mod.client.handlers["on_guild_role_update"](None, None), rt._loop).result(3)
+    got = {c["name"]: (c["readable"], c["can_send"]) for c in rt.guilds()[0]["channels"]}
+    assert got == {"open": (True, True), "no-history": (False, True), "hidden": (False, False),
+                   "read-only": (True, False)}
+    for name in ("on_guild_role_update", "on_member_update"):           # a role change must refresh the answer
+        assert name in mod.client.handlers
+    rt.stop()

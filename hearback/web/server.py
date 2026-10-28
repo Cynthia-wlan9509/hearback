@@ -26,9 +26,10 @@ from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               display_name, message_from_rest)
 from hearback.config import Config, load_config, save_discord_ids
-from hearback.discord import DiscordClient
+from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
-from hearback.llm import PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub, scrub_obj
+from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
+                          scrub_obj)
 from hearback.queue import Queue
 from hearback.sync import format_delta, sync as run_sync
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
@@ -64,9 +65,9 @@ def _names(v: Any) -> list[str]:
 class ApiError(Exception):
     """An error answer with a status code."""
 
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, extra: dict | None = None):
         super().__init__(message)
-        self.status, self.message = status, message
+        self.status, self.message, self.extra = status, message, extra or {}
 
 
 class Request:
@@ -96,7 +97,7 @@ class App:
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message)
         self._dir_cache: tuple[float, list[dict], str] | None = None
-        self._bot_id = ""
+        self._bot_id = self._bot_name = ""
         self.routes = self._build_routes()
 
     # ---- plumbing
@@ -119,13 +120,19 @@ class App:
         env = (os.environ.get(self.cfg.token_env) or "").strip()
         return {"set": True, "source": "env" if env else "file"}
 
-    def bot_id(self) -> str:
-        rid = self.runtime.status().get("bot_id")
-        if rid:
-            return rid
+    def _bot_me(self) -> tuple[str, str]:
+        """(id, name) of the bot: from the live gateway, else one cached REST call."""
+        st = self.runtime.status()
+        if st.get("bot_id"):
+            return st["bot_id"], str(st.get("bot_name") or "")
         if not self._bot_id:
-            self._bot_id = str(self.client().me().get("id", ""))
-        return self._bot_id
+            me = self.client().me()
+            self._bot_id = str(me.get("id", ""))
+            self._bot_name = str(me.get("username") or me.get("global_name") or "")
+        return self._bot_id, self._bot_name
+
+    def bot_id(self) -> str:
+        return self._bot_me()[0]
 
     def _llm_call(self, agent: dict, system: str, messages: list[dict]) -> str:
         return complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)[0]
@@ -276,11 +283,15 @@ class App:
     # ---- conversations
     def api_conversations(self, q: Request) -> tuple[int, Any]:
         guilds, reason = self.directory()
+        live = self.runtime.online
         items: dict[str, dict] = {}
         for g in guilds:
             for c in g["channels"]:
                 items[c["id"]] = {"id": c["id"], "kind": "guild", "guild_id": g["id"], "guild_name": g["name"],
                                   "channel_name": c["name"], "preview": "", "last_ts": ""}
+                if live:       # what the bot member may do there; only the gateway knows (None = unknown = fine)
+                    items[c["id"]].update(readable=c.get("readable") is not False,
+                                          can_send=c.get("can_send") is not False)
         for c in self.inbox.conversations():
             items.setdefault(c["id"], c).update({"preview": c["preview"], "last_ts": c["last_ts"]})
         for c in items.values():
@@ -288,12 +299,25 @@ class App:
             c["mode"], c["agent"] = rule["mode"], rule["agent"]
         out = sorted(items.values(), key=lambda c: (c["guild_name"], c["channel_name"]))
         out.sort(key=lambda c: c["last_ts"], reverse=True)
+        out.sort(key=lambda c: c.get("readable") is False)         # channels the bot cannot read go last
         return 200, {"items": out, "reason": reason}
+
+    def _no_access(self, channel: str) -> ApiError:
+        try:
+            name = self._bot_me()[1]
+        except (ApiError, HearbackError):
+            name = ""
+        return ApiError(403, "no_access", {"channel_id": channel, "bot_name": scrub(name)})
 
     def _fetch(self, channel: str, limit: int) -> tuple[dict, list[dict]]:
         c = self.client()
-        info = c.request("GET", "/channels/%s" % channel)
-        raw = c.request("GET", "/channels/%s/messages" % channel, {"limit": max(1, min(limit, 100))})
+        try:
+            info = c.request("GET", "/channels/%s" % channel)
+            raw = c.request("GET", "/channels/%s/messages" % channel, {"limit": max(1, min(limit, 100))})
+        except DiscordError as e:
+            if e.status == 403:           # Missing Access / Missing Permissions: the bot may not read this channel
+                raise self._no_access(channel) from None
+            raise
         return info, list(reversed(raw))
 
     def api_conv_messages(self, q: Request) -> tuple[int, Any]:
@@ -409,7 +433,10 @@ class App:
         return 200, {"settings": self.llm.settings()}
 
     def api_llm_test(self, q: Request) -> tuple[int, Any]:
-        return 200, {**self.llm.test_profile(q.groups[0]), "profile": self.llm.public(self.llm.get(q.groups[0]))}
+        res = self.llm.test_profile(q.groups[0])
+        if res.get("error") == EMPTY_TEXT_ERROR:
+            res["code"] = "empty_text"         # lets the page show its own translation
+        return 200, {**res, "profile": self.llm.public(self.llm.get(q.groups[0]))}
 
     def api_llm_settings(self, q: Request) -> tuple[int, Any]:
         return 200, self.llm.set_settings(q.body)
@@ -643,7 +670,7 @@ class App:
         except OSError:
             pass
         register_secret(tok)
-        self._bot_id = ""
+        self._bot_id = self._bot_name = ""
         self._dir_cache = None
         self.ledger.event(ACTOR, "token_update", None, None)
         return 200, {"set": True, "source": self.token_state()["source"]}
@@ -682,8 +709,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, obj: Any) -> None:
         self._send(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
-    def _error(self, status: int, message: str) -> None:
-        self._json(status, {"error": message})
+    def _error(self, status: int, message: str, extra: dict | None = None) -> None:
+        self._json(status, {"error": message, **(extra or {})})
 
     # ---- request handling
     def _host_ok(self) -> bool:
@@ -732,7 +759,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             status, obj = app.dispatch(method, parts.path, query, body)
         except ApiError as e:
-            return self._error(e.status, e.message)
+            return self._error(e.status, e.message, e.extra)
         except HearbackError as e:
             return self._error(400, scrub(str(e))[:600])
         except Exception as e:   # never leak internals (or secrets inside them)

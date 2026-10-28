@@ -66,6 +66,18 @@ function trashIcon() {
   svg.appendChild(p);
   return svg;
 }
+function lockIcon() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: "14", height: "14", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", class: "lock" })) svg.setAttribute(k, v);
+  const body = document.createElementNS(ns, "rect");
+  for (const [k, v] of Object.entries({ x: "5", y: "11", width: "14", height: "10", rx: "2" })) body.setAttribute(k, v);
+  const arc = document.createElementNS(ns, "path");
+  arc.setAttribute("d", "M8 11V7a4 4 0 0 1 8 0v4");
+  svg.appendChild(body);
+  svg.appendChild(arc);
+  return svg;
+}
 function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
 function toast(msg, bad) {
@@ -106,8 +118,8 @@ async function api(method, path, body) {
   const r = await fetch(path, opt);
   let data = null;
   try { data = await r.json(); } catch (e) { /* not JSON */ }
-  if (r.status === 403) { showLocked(); throw new Error("locked"); }
-  if (!r.ok) throw new Error((data && data.error) || "HTTP " + r.status);
+  if (r.status === 403 && !(data && data.error === "no_access")) { showLocked(); throw new Error("locked"); }
+  if (!r.ok) { const err = new Error((data && data.error) || "HTTP " + r.status); err.data = data || {}; throw err; }
   return data;
 }
 
@@ -132,12 +144,15 @@ function empty(title, text, btn) { return h("div", { class: "card empty" }, h("h
 function go(page) { location.hash = "#/" + page; }
 function goBtn(page, label, primary) { return h("button", { class: "btn" + (primary === false ? "" : " primary"), onclick: () => go(page) }, label); }
 function field(label, input) { return h("label", { class: "field" }, h("span", null, label), input); }
+function fieldHint(label, input, hint) { return h("label", { class: "field" }, h("span", null, label), input, h("div", { class: "sub small-text hint" }, hint)); }
 function statusLabel(s) { return hasKey("forum.st." + s) ? t("forum.st." + s) : s; }
 function sevBadge(s) { return s ? h("span", { class: "badge sev-" + s }, t("sev." + s)) : null; }
 function stopPolling() { if (POLL) { clearInterval(POLL); POLL = null; } }
 
 /* ---------- shell ---------- */
 function renderShell() {
+  const main = document.querySelector(".main");
+  if (main) main.classList.toggle("fill", PAGE === "conversations");      // the chat page uses the whole window height
   const side = clear($("side"));
   side.appendChild(h("div", { class: "brand" }, h("img", { src: "/swlink.svg", alt: "" }), h("span", null, "SWLink")));
   for (const [gk, pages] of NAV) {
@@ -292,12 +307,16 @@ async function pageConversations() {
       listBox.appendChild(h("div", { class: "group-title" }, g));
       for (const c of list) {
         const m = ruleFor(c).mode;
-        listBox.appendChild(h("button", { class: "conv-item" + (sel && sel.id === c.id ? " active" : ""), onclick: () => open(c) },
-          h("div", { class: "nm" }, h("span", null, (c.kind === "dm" ? "" : "# ") + c.channel_name), m === "off" ? null : h("span", { class: "mode-tag " + m }, modeLabel(m))),
+        const locked = c.readable === false;
+        listBox.appendChild(h("button", { class: "conv-item" + (sel && sel.id === c.id ? " active" : "") + (locked ? " unreadable" : ""), title: locked ? t("conv.locked") : null, onclick: () => open(c) },
+          h("div", { class: "nm" }, h("span", null, locked ? lockIcon() : null, (c.kind === "dm" ? "" : "# ") + c.channel_name), m === "off" ? null : h("span", { class: "mode-tag " + m }, modeLabel(m))),
           c.preview ? h("div", { class: "pv" }, c.preview) : null));
       }
     }
     count.textContent = t("conv.total", { n: vis.length });
+  }
+  function noAccessCard(name) {
+    return h("div", { class: "no-access" }, lockIcon(), h("h3", null, t("conv.noAccess.title", { name: name || t("conv.noAccess.bot") })), h("div", { class: "sub" }, t("conv.noAccess.text")));
   }
   async function setMode(c, mode, selectEl) {
     if (mode === "auto" && !(await confirmBox(t("conv.autoTitle"), t("conv.autoText"), t("mode.auto"), false))) { selectEl.value = ruleFor(c).mode; return; }
@@ -333,8 +352,12 @@ async function pageConversations() {
             h("div", { class: "avatar" }, img ? h("img", { src: img, alt: "" }) : (m.author_name || "?").slice(0, 1).toUpperCase()),
             h("div", { class: "bubble" }, h("div", { class: "who" }, m.author_name + " · " + fmtTime(m.time)), h("div", { class: "txt" }, text))));
         }
-        body.scrollTop = body.scrollHeight;
-      } catch (e) { clear(body); fail(e); }
+        body.scrollTop = body.scrollHeight;          // the message box only; never the page
+      } catch (e) {
+        clear(body);
+        if (e && e.message === "no_access") body.appendChild(noAccessCard((e.data && e.data.bot_name) || (STATUS && STATUS.bot && STATUS.bot.bot_name) || ""));
+        else fail(e);
+      }
     }
     async function draft() {
       draftBtn.disabled = true; toast(t("conv.drafting"));
@@ -693,7 +716,7 @@ async function pageLLM() {
         h("div", { class: "card-actions" }, statusBadge(p),
           h("button", { class: "btn small", disabled: active, onclick: async () => { try { await api("POST", "/api/llm/" + p.id + "/activate", {}); renderPage(); } catch (e) { fail(e); } } }, active ? t("llm.active") : t("llm.setActive")),
           h("button", { class: "btn small", onclick: () => editProfile(p) }, t("common.edit")),
-          h("button", { class: "btn small", onclick: async (ev) => { ev.target.disabled = true; toast(t("llm.testing")); try { const r = await api("POST", "/api/llm/" + p.id + "/test", {}); toast(r.ok ? t("llm.testOk", { t: r.text }) : r.error, !r.ok); renderPage(); } catch (e) { fail(e); ev.target.disabled = false; } } }, t("llm.test")),
+          h("button", { class: "btn small", onclick: async (ev) => { ev.target.disabled = true; toast(t("llm.testing")); try { const r = await api("POST", "/api/llm/" + p.id + "/test", {}); toast(r.ok ? t("llm.testOk", { t: r.text }) : (r.code === "empty_text" ? t("llm.testEmpty") : r.error), !r.ok); renderPage(); } catch (e) { fail(e); ev.target.disabled = false; } } }, t("llm.test")),
           h("span", { class: "spacer" }),
           h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => { if (await confirmBox(t("llm.delTitle"), t("llm.delText"), t("common.delete"), true)) { try { await api("DELETE", "/api/llm/" + p.id, {}); renderPage(); } catch (e) { fail(e); } } } }, trashIcon())));
     })));
@@ -708,20 +731,22 @@ async function pageLLM() {
     const presetSel = h("select", null, presets.map((p) => h("option", { value: p.id }, p.name)));
     const name = h("input", { type: "text" }), base = h("input", { type: "url", placeholder: "https://" }), model = h("input", { type: "text", list: "model-suggest" });
     const dl = h("datalist", { id: "model-suggest" });
-    const key = h("input", { type: "password", autocomplete: "off" }), maxTok = h("input", { type: "number", value: "1024", min: "1" });
+    const key = h("input", { type: "password", autocomplete: "off" }), maxTok = h("input", { type: "number", value: "2048", min: "1" });
+    const maxConc = h("input", { type: "number", value: "2", min: "1", max: "16" });
     const apply = () => {
       const p = presets.find((x) => x.id === presetSel.value);
       name.value = p.name; base.value = p.base_url; model.value = p.model;
       clear(dl); p.models.forEach((m) => dl.appendChild(h("option", { value: m })));
     };
     presetSel.addEventListener("change", apply); apply();
-    const body = h("div", null, field(t("llm.preset"), presetSel), field(t("common.name"), name), field(t("llm.baseUrl"), base), field(t("llm.model"), model), dl,
+    const body = h("div", null, field(t("llm.preset"), presetSel), field(t("common.name"), name), field(t("llm.baseUrl"), base), fieldHint(t("llm.model"), model, t("llm.modelHint")), dl,
       field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), field(t("llm.maxTokens"), maxTok),
+      fieldHint(t("llm.maxConcurrent"), maxConc, t("llm.maxConcurrentHint")),
       data.keyring ? null : h("div", { class: "badge err" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })));
     modal(t("common.new"), body, [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
       const p = presets.find((x) => x.id === presetSel.value);
       try {
-        const r = await api("POST", "/api/llm", { preset: presetSel.value, name: name.value, protocol: p.protocol, base_url: base.value, model: model.value, key: key.value, max_tokens: +maxTok.value });
+        const r = await api("POST", "/api/llm", { preset: presetSel.value, name: name.value, protocol: p.protocol, base_url: base.value, model: model.value, key: key.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
         if (r.key_error) toast(r.key_error, true);
         renderPage();
       } catch (e) { fail(e); return false; }
@@ -729,14 +754,16 @@ async function pageLLM() {
   }
   function editProfile(p) {
     const name = h("input", { type: "text", value: p.name }), base = h("input", { type: "url", value: p.base_url || "", placeholder: "https://" });
-    const model = h("input", { type: "text", value: p.model }), maxTok = h("input", { type: "number", value: String(p.max_tokens || 1024), min: "1" });
+    const model = h("input", { type: "text", value: p.model }), maxTok = h("input", { type: "number", value: String(p.max_tokens || 2048), min: "1" });
+    const maxConc = h("input", { type: "number", value: String(p.max_concurrent || 2), min: "1", max: "16" });
     const key = h("input", { type: "password", autocomplete: "off", placeholder: p.key_set ? t("llm.keyKeep") : "" });
-    const body = h("div", null, field(t("common.name"), name), field(t("llm.baseUrl"), base), field(t("llm.model"), model),
+    const body = h("div", null, field(t("common.name"), name), field(t("llm.baseUrl"), base), fieldHint(t("llm.model"), model, t("llm.modelHint")),
       field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), field(t("llm.maxTokens"), maxTok),
+      fieldHint(t("llm.maxConcurrent"), maxConc, t("llm.maxConcurrentHint")),
       data.keyring ? null : h("div", { class: "badge err" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })));
     modal(t("common.edit") + " · " + p.name, body, [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
       try {
-        await api("PUT", "/api/llm/" + p.id, { name: name.value, base_url: base.value, model: model.value, max_tokens: +maxTok.value });
+        await api("PUT", "/api/llm/" + p.id, { name: name.value, base_url: base.value, model: model.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
         if (key.value.trim()) await api("POST", "/api/llm/" + p.id + "/key", { key: key.value.trim() });
         renderPage();
       } catch (e) { fail(e); return false; }

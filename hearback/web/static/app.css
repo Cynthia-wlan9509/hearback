@@ -246,3 +246,29 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
   .detail, .two { grid-template-columns: 1fr; }
   .thread-head { flex-wrap: wrap; }
 }
+
+/* round 3: the chat page fills the window; locked channels; hints */
+.main.fill { height: 100vh; display: flex; flex-direction: column; padding-bottom: 16px; overflow: hidden; }
+.main.fill > .top, .main.fill > #howto { flex: none; }
+.main.fill .top { padding: 18px 0 12px; }
+.main.fill .howto { margin-bottom: 12px; padding: 8px 14px; }
+.main.fill .howto-steps { display: flex; flex-wrap: wrap; gap: 0 28px; list-style-position: inside; padding-left: 0; }
+.main.fill .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.main.fill .conv { flex: 1; height: auto; min-height: 0; }
+.conv-item.unreadable { opacity: .55; }
+.conv-item .lock { vertical-align: -2px; margin-right: 4px; flex: none; }
+.no-access { text-align: center; padding: 44px 20px; color: var(--sub); }
+.no-access .lock { width: 28px; height: 28px; color: var(--muted); }
+.no-access h3 { color: var(--ink); margin: 8px 0 6px; }
+label.field > .hint { display: block; margin: 4px 0 0; font-size: 12px; color: var(--sub); }
+
+@media (max-height: 600px) {
+  .main.fill { height: auto; min-height: 100vh; overflow: visible; }
+  .main.fill .view { display: block; }
+  .main.fill .conv { height: 460px; }
+}
+@media (max-width: 860px) {
+  .main.fill { height: auto; display: block; overflow: visible; padding-bottom: 32px; }
+  .main.fill .view { display: block; }
+  .main.fill .conv { height: auto; }
+}

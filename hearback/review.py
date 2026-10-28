@@ -59,7 +59,9 @@ Answer with exactly one JSON object and nothing else (no markdown fence). Keys:
   "severity": "high" | "medium" | "low",
   "suggest_status": one of %s,
   "confidence": number from 0 to 1 for how sure you are of the diagnosis,
-  "duplicate_of": id of another listed thread that reports the same problem, or "",
+  "duplicate_of": id of another listed thread that reports the SAME symptom in the same place (a second report of
+                  the same thing), or "". A shared root cause with a different symptom is the same cluster, not a
+                  duplicate: leave this "" and do not use status "duplicate",
   "likely_cause": string, your best hypothesis (say so when it is a guess),
   "where_to_look": array of short strings: files, modules, screens or settings worth checking first,
   "need_info": string, what to ask the reporter for (version, steps, logs, screenshot) or "" if nothing is missing,
@@ -67,6 +69,11 @@ Answer with exactly one JSON object and nothing else (no markdown fence). Keys:
   "tags_add": array of forum tag names to add, "tags_remove": array of forum tag names to remove
 }
 Use only tag names from the provided forum tag list. Use [] for empty lists and "" for empty strings.
+Status: a report that says where it happened and what happened (steps or a screenshot are enough) is
+"investigating" even without logs; use "need-info" only when you cannot tell what happened or where; use "not-bug"
+only when you are sure it is intended behaviour or a usage mistake.
+Reply draft: do not ask for anything the tags or the post already state; do not mention other thread ids; if the
+report describes an exploit (free resources, skipped costs), acknowledge it without describing how to trigger it.
 """ % (UNTRUSTED, ", ".join(SUGGEST_STATUSES))
 
 

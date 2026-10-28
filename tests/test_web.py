@@ -10,6 +10,7 @@ import pytest
 
 from conftest import make_env
 from hearback import llm
+from hearback.chatbot import Message
 from hearback.llm import LLMStore, set_provider_factory
 from hearback.web import server as web
 
@@ -467,3 +468,120 @@ def test_neither_key_nor_token_reaches_any_response_or_data_file(web_env):
         if p.is_file() and p.name != "token.txt":
             data = p.read_bytes()
             assert KEY.encode() not in data and TOKEN.encode() not in data, p.name
+
+
+# ---------------------------------------------------------------- round 3: unreadable channels, model settings
+
+class PermRuntime(StubRuntime):
+    """An online gateway that knows what the bot member may do in each channel."""
+
+    def __init__(self, guilds, bot_id="", bot_name=""):
+        super().__init__()
+        self.state = "online"
+        self._guilds, self._bot = guilds, (bot_id, bot_name)
+
+    def status(self):
+        return {"state": self.state, "reason": "", "bot_id": self._bot[0], "bot_name": self._bot[1]}
+
+    def guilds(self):
+        return self._guilds
+
+
+def _chan(cid, name, readable=True, can_send=True):
+    return {"id": cid, "name": name, "readable": readable, "can_send": can_send}
+
+
+def test_conversations_carry_readable_and_can_send_and_unreadable_ones_sort_last(web_env):
+    w, e = web_env, web_env.env
+    open_ch, hidden, muted = e.fake.add_channel("open"), e.fake.add_channel("hidden"), e.fake.add_channel("read-only")
+    inbox = w.srv.app.inbox
+    inbox.add(Message(id="1", channel_id=open_ch, author_id="5", author_name="Mira", content="hi", ts="2026-10-24T10:00:00Z",
+                      guild_id=e.fake.guild_id))
+    inbox.add(Message(id="2", channel_id=hidden, author_id="5", author_name="Mira", content="hi", ts="2026-10-24T12:00:00Z",
+                      guild_id=e.fake.guild_id))                  # the newest activity, yet it still sorts last
+    w.srv.app.runtime = PermRuntime([{"id": e.fake.guild_id, "name": "G", "channels": [
+        _chan(hidden, "hidden", readable=False, can_send=False), _chan(open_ch, "open"),
+        _chan(muted, "read-only", can_send=False)]}])
+    rows = w.ok("GET", "/api/conversations")["items"]
+    by = {r["id"]: r for r in rows}
+    assert by[open_ch]["readable"] is True and by[open_ch]["can_send"] is True
+    assert by[muted]["readable"] is True and by[muted]["can_send"] is False
+    assert by[hidden]["readable"] is False and by[hidden]["can_send"] is False
+    assert rows[-1]["id"] == hidden and {r["id"] for r in rows[:-1]} == {open_ch, muted}
+
+
+def test_conversations_without_a_live_gateway_do_not_claim_anything_about_permissions(web_env):
+    rows = web_env.ok("GET", "/api/conversations")["items"]
+    assert rows and all("readable" not in r and "can_send" not in r for r in rows)
+
+
+def test_a_403_from_discord_becomes_no_access_with_the_bots_real_name(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("locked-away")
+    e.fake.fail_next(r"GET /channels/%s/messages" % ch, 403, {"message": "Missing Access", "code": 50001})
+    r = w.get("/api/conversations/%s/messages" % ch)                    # name comes from /users/@me (gateway offline)
+    assert r.status == 403 and r.json["error"] == "no_access"
+    assert r.json["bot_name"] == "hearbackbot" and r.json["channel_id"] == ch
+    w.srv.app.runtime = PermRuntime([], bot_id="777", bot_name="Gateway Name")
+    e.fake.fail_next(r"GET /channels/%s$" % ch, 403, {"message": "Missing Access", "code": 50001})
+    r = w.get("/api/conversations/%s/messages" % ch)                    # the channel lookup itself is refused
+    assert r.status == 403 and r.json == {"error": "no_access", "channel_id": ch, "bot_name": "Gateway Name"}
+
+
+def test_other_discord_errors_stay_plain_400s_and_a_bad_key_is_still_403_forbidden(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("flaky")
+    e.fake.fail_next(r"GET /channels/%s/messages" % ch, 500, {"message": "boom"})
+    r = w.get("/api/conversations/%s/messages" % ch)
+    assert r.status == 400 and r.json["error"].startswith("HTTP 500")
+    r = w.get("/api/conversations/%s/messages" % ch, key="wrong")
+    assert r.status == 403 and r.json == {"error": "forbidden"}
+
+
+def test_ai_draft_in_an_unreadable_channel_is_no_access_too(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("locked-away")
+    e.fake.fail_next(r"GET /channels/%s/messages" % ch, 403, {"message": "Missing Access", "code": 50001})
+    r = w.call("POST", "/api/conversations/%s/draft" % ch, {})
+    assert r.status == 403 and r.json["error"] == "no_access"
+
+
+def test_sending_where_the_bot_may_not_is_still_a_plain_error(web_env):
+    w, e = web_env, web_env.env
+    ch = e.fake.add_channel("no-send")
+    e.fake.fail_next(r"POST /channels/%s/messages" % ch, 403, {"message": "Missing Permissions", "code": 50013})
+    r = w.call("POST", "/api/conversations/%s/send" % ch, {"text": "hi"})
+    assert r.status == 400 and "403" in r.json["error"]
+
+
+def test_llm_test_endpoint_marks_empty_text_for_the_page(web_env):
+    w = web_env
+    w.ok("POST", "/api/llm", {"name": "Thinker", "protocol": "openai", "model": "m", "key": KEY})
+    seen = []
+
+    class P(llm.Provider):
+        def complete(self, system, messages, max_tokens):
+            seen.append(max_tokens)
+            return ""
+    set_provider_factory("openai", lambda profile, key, timeout: P())
+    r = w.ok("POST", "/api/llm/thinker/test")
+    assert r["ok"] is False and r["code"] == "empty_text" and r["error"] == llm.EMPTY_TEXT_ERROR
+    assert r["profile"]["status"] == "error" and seen == [512]
+
+
+def test_llm_profiles_take_max_concurrent_and_default_to_2048_tokens(web_env):
+    w = web_env
+    p = w.ok("POST", "/api/llm", {"name": "Relay", "protocol": "openai", "model": "m"})
+    assert p["max_tokens"] == 2048 and p["max_concurrent"] == 2
+    assert w.ok("PUT", "/api/llm/relay", {"max_concurrent": 6})["max_concurrent"] == 6
+    assert w.call("PUT", "/api/llm/relay", {"max_concurrent": 40}).status == 400
+    assert w.ok("GET", "/api/llm")["profiles"][0]["max_concurrent"] == 6
+
+
+def test_the_chat_page_fills_the_window_and_the_composer_cannot_fall_off():
+    css = (web.STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert ".main.fill { height: 100vh; display: flex; flex-direction: column;" in css
+    assert ".main.fill .view { flex: 1; min-height: 0;" in css and ".main.fill .conv { flex: 1; height: auto; min-height: 0; }" in css
+    assert 'classList.toggle("fill", PAGE === "conversations")' in js
+    assert "scrollIntoView" not in js                      # new messages only scroll their own box

@@ -341,3 +341,205 @@ def test_http_status_survives_complete_and_complete_any(store):
     with pytest.raises(LLMError) as ei:
         complete_any(store, "s", [])
     assert ei.value.status is None
+
+
+# ---------------------------------------------------------------- round 3: empty answers, defaults, concurrency, 429/503
+
+class Limited(Exception):
+    """What an SDK raises for a relay 429/503, with an optional Retry-After header."""
+
+    def __init__(self, msg, status=429, retry_after=None):
+        super().__init__(msg)
+        self.status_code = status
+        self.response = types.SimpleNamespace(headers={"retry-after": str(retry_after)} if retry_after is not None else {})
+
+
+@pytest.fixture
+def napping(tmp_path):
+    """A store whose sleeps are recorded instead of slept."""
+    s = LLMStore(tmp_path / ".hearback", environ={}, keyring_mod=FakeKeyring(), sleep=lambda x: s.naps.append(x))
+    s.naps = []
+    return s
+
+
+def test_profile_test_asks_for_512_tokens_and_flags_empty_text(store):
+    p = add(store)
+    store.set_key(p["id"], KEY)
+    fp = FakeProvider(["", "OK"])
+    set_provider_factory("openai", fp.factory)
+    r = store.test_profile(p["id"])
+    assert r == {"ok": False, "error": llm.EMPTY_TEXT_ERROR} and "2048+" in r["error"]
+    pub = store.public(store.get(p["id"]))
+    assert pub["status"] == "error" and pub["last_error"] == llm.EMPTY_TEXT_ERROR
+    assert store.test_profile(p["id"])["ok"] is True
+    assert [c[4] for c in fp.calls] == [512, 512]
+
+
+def _openai_client(monkeypatch, content, finish_reason):
+    class Client:
+        def __init__(self, **kw):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+        def create(self, **kw):
+            msg = types.SimpleNamespace(content=content)
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason=finish_reason)])
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=Client))
+
+
+def test_openai_empty_answer_that_ran_out_of_tokens_is_an_error(monkeypatch):
+    prof = {"id": "o", "protocol": "openai", "model": "m"}
+    _openai_client(monkeypatch, None, "length")
+    with pytest.raises(LLMError, match="ran out of output tokens.*raise Max output tokens"):
+        complete(prof, "s", [], 5, key=KEY)
+    _openai_client(monkeypatch, "  ", "length")
+    with pytest.raises(LLMError, match="ran out of output tokens"):
+        complete(prof, "s", [], 5, key=KEY)
+    _openai_client(monkeypatch, "cut off but", "length")           # some text came back: keep it
+    assert complete(prof, "s", [], 5, key=KEY) == "cut off but"
+    _openai_client(monkeypatch, "", "stop")                        # an empty stop is the caller's business
+    assert complete(prof, "s", [], 5, key=KEY) == ""
+
+
+def test_anthropic_empty_answer_that_hit_max_tokens_is_an_error(monkeypatch):
+    def client(blocks, stop):
+        class Client:
+            def __init__(self, **kw):
+                self.messages = types.SimpleNamespace(
+                    create=lambda **k: types.SimpleNamespace(stop_reason=stop, content=blocks))
+        monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=Client))
+
+    prof = {"id": "a", "protocol": "anthropic", "model": "m"}
+    client([types.SimpleNamespace(type="thinking")], "max_tokens")
+    with pytest.raises(LLMError, match="ran out of output tokens"):
+        complete(prof, "s", [], 5, key=KEY)
+    client([types.SimpleNamespace(type="text", text="partial")], "max_tokens")
+    assert complete(prof, "s", [], 5, key=KEY) == "partial"
+    client([], "end_turn")
+    assert complete(prof, "s", [], 5, key=KEY) == ""
+
+
+def test_new_profiles_default_to_2048_tokens_and_2_concurrent_old_files_keep_theirs(store):
+    assert llm.DEFAULT_MAX_TOKENS == 2048
+    new = add(store, "New")
+    assert new["max_tokens"] == 2048 and new["max_concurrent"] == 2
+    store.path.write_text(json.dumps({"active": "old", "profiles": [
+        {"id": "old", "name": "Old", "protocol": "openai", "model": "m", "max_tokens": 1024, "enabled": True}]}),
+        encoding="utf-8")
+    old = store.public(store.get("old"))
+    assert old["max_tokens"] == 1024 and old["max_concurrent"] == 2          # a file without the field gets the default
+    assert store.update_profile("old", {"name": "Old two"})["max_tokens"] == 1024
+
+
+def test_max_concurrent_is_validated_and_editable(store):
+    p = add(store, max_concurrent=5)
+    assert p["max_concurrent"] == 5
+    assert store.update_profile(p["id"], {"max_concurrent": 16})["max_concurrent"] == 16
+    for bad in (0, 17, "x", None):
+        with pytest.raises(LLMError, match="max_concurrent"):
+            store.update_profile(p["id"], {"max_concurrent": bad})
+    with pytest.raises(LLMError, match="max_concurrent"):
+        add(store, "Other", max_concurrent=99)
+    assert store.get(p["id"])["max_concurrent"] == 16
+
+
+def test_a_semaphore_caps_calls_in_flight_per_profile(store):
+    import threading
+    import time
+
+    p = add(store, max_concurrent=2)
+    other = add(store, "Other", max_concurrent=1)
+    for x in (p, other):
+        store.set_key(x["id"], "key-%s-xxxxxx" % x["id"])
+    lock, gate = threading.Lock(), threading.Event()
+    seen = {"now": 0, "peak": 0, "done": 0}
+
+    class Slow(llm.Provider):
+        def complete(self, system, messages, max_tokens):
+            with lock:
+                seen["now"] += 1
+                seen["peak"] = max(seen["peak"], seen["now"])
+            gate.wait(5)
+            with lock:
+                seen["now"] -= 1
+                seen["done"] += 1
+            return "ok"
+    set_provider_factory("openai", lambda profile, key, timeout: Slow())
+    threads = [threading.Thread(target=store.call_profile, args=(store.get(p["id"]), "s", [])) for _ in range(5)]
+    for t in threads:
+        t.start()
+    end = time.monotonic() + 3
+    while seen["peak"] < 2 and time.monotonic() < end:
+        time.sleep(0.01)
+    time.sleep(0.15)                                  # give a third call the chance to (wrongly) get in
+    assert seen["now"] == 2 and seen["peak"] == 2
+    assert store.public(store.get(p["id"]))["calls_min"] == 2        # waiting calls are not counted yet
+    second = threading.Thread(target=store.call_profile, args=(store.get(other["id"]), "s", []))
+    second.start()                                    # another profile has its own slots
+    time.sleep(0.1)
+    assert seen["now"] == 3
+    gate.set()
+    for t in threads + [second]:
+        t.join(5)
+    assert seen["done"] == 6 and seen["peak"] <= 3 and seen["now"] == 0
+
+
+def test_429_waits_2_then_5_seconds_then_gives_up(napping):
+    p = add(napping, max_concurrent=1)               # one slot: a leaked slot would hang the retry
+    napping.set_key(p["id"], "key-a-xxxxxx")
+    napping.set_settings({"retries": 2})
+    fp = FakeProvider([Limited("concurrent requests reached your tier limit (3)"), Limited("no route available", 503),
+                       Limited("still limited")])
+    set_provider_factory("openai", fp.factory)
+    with pytest.raises(LLMError) as ei:
+        complete_any(napping, "s", [])
+    assert napping.naps == [2.0, 5.0] and len(fp.calls) == 3 and ei.value.status is None
+    pub = napping.public(napping.get(p["id"]))
+    assert pub["status"] == "error" and pub["last_error"].endswith("[HTTP 429 x3 since the last success]")
+    fp.script = [Limited("busy", 503), "fine"]
+    napping.naps.clear()
+    assert complete_any(napping, "s", []) == ("fine", p["id"])
+    assert napping.naps == [2.0]
+    pub = napping.public(napping.get(p["id"]))
+    assert pub["status"] == "ok" and pub["last_error"] == ""            # the count starts over after a success
+
+
+def test_429_honours_retry_after_and_caps_it(napping):
+    p = add(napping)
+    napping.set_key(p["id"], "key-a-xxxxxx")
+    napping.set_settings({"retries": 2})
+    set_provider_factory("openai", FakeProvider([Limited("slow down", 429, retry_after=7), Limited("again", 429, 9999),
+                                                 "fine"]).factory)
+    assert complete_any(napping, "s", [])[0] == "fine"
+    assert napping.naps == [7.0, llm.MAX_RETRY_WAIT]
+
+
+def test_other_errors_keep_the_short_backoff(napping):
+    p = add(napping)
+    napping.set_key(p["id"], "key-a-xxxxxx")
+    napping.set_settings({"retries": 2})
+    set_provider_factory("openai", FakeProvider([RuntimeError("blip"), Limited("bad request", 400), "fine"]).factory)
+    assert complete_any(napping, "s", [])[0] == "fine"
+    assert napping.naps == [0.5, 1.0]
+
+
+def test_after_the_retries_a_limited_profile_falls_back_to_the_next(napping):
+    a, b = add(napping, "A"), add(napping, "B")
+    for x in (a, b):
+        napping.set_key(x["id"], "key-%s-xxxxxx" % x["id"])
+    napping.set_settings({"retries": 1, "fallback": True})
+    fp = FakeProvider([Limited("limit"), Limited("limit"), "from-b"])
+    set_provider_factory("openai", fp.factory)
+    assert complete_any(napping, "s", []) == ("from-b", "b")
+    assert [c[0] for c in fp.calls] == ["a", "a", "b"] and napping.naps == [2.0]
+
+
+def test_retry_after_is_read_from_headers_or_attributes():
+    assert llm._retry_after(Limited("x", 429, retry_after=3)) == 3.0
+    e = Exception("x")
+    e.retry_after = 4
+    assert llm._retry_after(e) == 4.0
+    for junk in ("soon", -1, float("nan")):
+        bad = Limited("x")
+        bad.response.headers = {"Retry-After": junk}
+        assert llm._retry_after(bad) is None
+    assert llm._retry_after(Exception("plain")) is None

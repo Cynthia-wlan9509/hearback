@@ -382,7 +382,7 @@ class Chatbot:
 INSTALL_HINT = "install the bot extra: pip install \"hearback-desk[bot]\""
 INTENT_HINT = "Turn on Message Content Intent in the Developer Portal (Bot page), then start again"
 GUILD_EVENTS = ("on_guild_join", "on_guild_remove", "on_guild_channel_create", "on_guild_channel_delete",
-                "on_guild_channel_update")
+                "on_guild_channel_update", "on_guild_role_update", "on_member_update")      # roles: bot permissions
 
 
 class BotRuntime:
@@ -459,10 +459,21 @@ class BotRuntime:
             self._thread.join(timeout)
 
     # ---- the thread
+    @staticmethod
+    def _access(guild: Any, channel: Any) -> dict:
+        """What the bot member may do in a channel: {readable, can_send}; None when discord.py cannot tell."""
+        try:
+            perms = channel.permissions_for(guild.me)
+            return {"readable": bool(perms.view_channel and perms.read_message_history),
+                    "can_send": bool(perms.send_messages)}
+        except Exception:
+            return {"readable": None, "can_send": None}
+
     def _snapshot(self, client: Any) -> None:
         out = []
         for g in list(getattr(client, "guilds", []) or []):
-            chans = [{"id": str(c.id), "name": str(c.name)} for c in getattr(g, "text_channels", []) or []]
+            chans = [{"id": str(c.id), "name": str(c.name), **self._access(g, c)}
+                     for c in getattr(g, "text_channels", []) or []]
             out.append({"id": str(g.id), "name": str(g.name), "channels": chans})
         with self._lock:
             self._guilds = out

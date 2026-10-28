@@ -222,7 +222,11 @@ the agent-facing MCP surface changes.
 - **LLM profiles** (`.hearback/llm.json`): Anthropic or OpenAI protocol, any base URL (official, DeepSeek, relays).
   Keys are kept in the OS keyring (service `hearback-swlink`) or `HEARBACK_LLM_KEY_<ID>`; the file holds a four
   character hint only. One active profile, optional fallback to the others in order, retries, per-profile call
-  counters. All error text passes through a scrubber that removes keys and tokens.
+  counters. All error text passes through a scrubber that removes keys and tokens. New profiles default to 2048 output
+  tokens (an empty answer that stopped on the token limit is an error, never a silent `""`; the Test button asks for 512
+  and reports an empty answer). Each profile has `max_concurrent` (default 2, 1 to 16): a semaphore around every provider
+  call, shared by chat, drafts and review. After a 429 or 503 the call waits for the relay's Retry-After (else 2 s, then
+  5 s), up to `retries` times, then falls back; the profile card's last error counts these.
 - **Console security**: loopback bind, per-run secret in the launch link (kept in sessionStorage, removed from the
   address bar), Host and Origin checks, JSON-only writes, static files only from the package, a strict CSP, no
   `innerHTML`. The bot token and API keys are write-only through the API.
@@ -240,6 +244,10 @@ the agent-facing MCP surface changes.
 - **Bot messages**: list, edit and delete what the bot itself posted in a thread or channel (the same human-only
   direct writes as the desktop editor; the server checks the author before touching a message and keeps
   `triage.replies_posted` in step).
+- **Channels the bot cannot read**: with the gateway online `/api/conversations` adds `readable` (view channel and read
+  message history) and `can_send` per channel from discord.py's `permissions_for(guild.me)`; the page greys unreadable
+  ones, sorts them last and, like any 403 from the messages fetch (`{"error": "no_access", "bot_name": ...}`, status 403),
+  shows a card that says which permissions to turn on.
 - Without discord.py the console still works over REST (read channels, human send, AI draft, approvals); only the live
   gateway needs the `bot` extra. Without the forum configured, chat features need just the token.
 
