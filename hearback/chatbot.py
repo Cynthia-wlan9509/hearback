@@ -508,7 +508,8 @@ class BotRuntime:
     def _snapshot(self, client: Any) -> None:
         out = []
         for g in list(getattr(client, "guilds", []) or []):
-            chans = [{"id": str(c.id), "name": str(c.name), **self._access(g, c)}
+            chans = [{"id": str(c.id), "name": str(c.name), "category": str(getattr(getattr(c, "category", None), "name", "") or ""),
+                      **self._access(g, c)}
                      for c in getattr(g, "text_channels", []) or []]
             out.append({"id": str(g.id), "name": str(g.name), "channels": chans})
         with self._lock:

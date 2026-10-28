@@ -212,8 +212,11 @@ class App:
             out = []
             for g in c.request("GET", "/users/@me/guilds"):
                 chans = c.request("GET", "/guilds/%s/channels" % g["id"])
+                cats = {str(ch["id"]): ch.get("name", "") for ch in chans if ch.get("type") == 4}
+                chans = sorted(chans, key=lambda ch: ch.get("position", 0))
                 out.append({"id": str(g["id"]), "name": g.get("name", ""),
-                            "channels": [{"id": str(ch["id"]), "name": ch.get("name", "")}
+                            "channels": [{"id": str(ch["id"]), "name": ch.get("name", ""),
+                                          "category": cats.get(str(ch.get("parent_id")), "")}
                                          for ch in chans if ch.get("type") in TEXT_CHANNEL_TYPES]})
             res: tuple[float, list[dict], str] = (now, out, "")
         except ApiError as e:
@@ -282,6 +285,7 @@ class App:
         add("GET", "/api/forum/(\\d+)", self.api_forum_thread)
         add("POST", "/api/forum/(\\d+)/adopt", self.api_forum_adopt)
         add("POST", "/api/forum/(\\d+)/propose", self.api_forum_propose)
+        add("GET", "/api/places", self.api_places)
         add("GET", "/api/botmsgs", self.api_botmsgs)
         add("PUT", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_edit)
         add("DELETE", "/api/botmsgs/(\\d+)/(\\d+)", self.api_botmsg_delete)
@@ -670,6 +674,29 @@ class App:
             return "#" + str(self.client().request("GET", "/channels/%s" % channel).get("name") or channel)
         except (ApiError, HearbackError):
             return channel
+
+    def api_places(self, q: Request) -> tuple[int, Any]:
+        """Places besides plain channels: open threads outside the bug forum (grouped by their parent) and DMs."""
+        guilds, reason = self.directory()
+        known = set(self.ledger.load()["threads"])
+        threads = []
+        try:
+            c = self.client()
+            for g in guilds:
+                names = {str(ch["id"]): ch.get("name", "") for ch in c.request("GET", "/guilds/%s/channels" % g["id"])}
+                for th in c.request("GET", "/guilds/%s/threads/active" % g["id"]).get("threads", []):
+                    tid, parent = str(th.get("id")), str(th.get("parent_id") or "")
+                    if tid in known or parent == self.cfg.forum_id:
+                        continue
+                    threads.append({"id": tid, "name": th.get("name", ""), "guild": g["name"],
+                                    "parent": names.get(parent, parent)})
+        except ApiError as e:
+            reason = reason or e.message
+        except HearbackError as e:
+            reason = reason or scrub(str(e))[:200]
+        dms = [{"id": c["id"], "name": c["channel_name"], "last": c["last_ts"]}
+               for c in self.inbox.conversations() if not c["guild_id"]]
+        return 200, {"threads": threads, "dms": dms, "reason": reason}
 
     def api_botmsgs(self, q: Request) -> tuple[int, Any]:
         channel, focus = editor.parse_target(q.query.get("channel"))

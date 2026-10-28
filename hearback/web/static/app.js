@@ -676,17 +676,50 @@ async function pageForum() {
 
 /* ---------- bot messages ---------- */
 async function pageBotMsgs() {
-  const forum = await api("GET", "/api/forum").catch(() => ({ configured: false, items: [] }));
-  const guilds = await api("GET", "/api/guilds").catch(() => ({ items: [], reason: "" }));
+  const [forum, guilds, places] = await Promise.all([
+    api("GET", "/api/forum").catch(() => ({ configured: false, items: [] })),
+    api("GET", "/api/guilds").catch(() => ({ items: [], reason: "" })),
+    api("GET", "/api/places").catch(() => ({ threads: [], dms: [], reason: "" }))]);
   if (guilds.reason === "no_token" && !forum.items.length) return empty(t("bm.empty.title"), t("bm.noToken"), goBtn("settings", t("nav.settings")));
   const out = h("div", { class: "bm-list" }, h("div", { class: "muted pad" }, t("bm.first")));
-  const place = h("select", { onchange: () => { if (place.value) { link.value = ""; load(place.value); } } },
-    h("option", { value: "" }, t("bm.pick")),
-    forum.configured && forum.items.length ? h("optgroup", { label: t("bm.threads") }, forum.items.map((r) => h("option", { value: r.id }, r.title))) : null,
-    guilds.items.map((g) => h("optgroup", { label: g.name + " · " + t("bm.channels") }, g.channels.map((c) => h("option", { value: c.id }, "# " + c.name)))));
+  // one picker per kind of place, so a long server does not end up as one endless dropdown
+  const groups = (rows, key) => { const m = new Map(); rows.forEach((r) => { const k = key(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }); return [...m]; };
+  const chanRows = guilds.items.flatMap((g) => g.channels.map((c) => ({ ...c, group: g.name + " · " + (c.category || t("bm.noCategory")) })));
+  const forumRows = forum.items.slice().sort((a, b) => String(b.last_activity).localeCompare(String(a.last_activity)));
+  const kinds = [
+    { id: "channels", label: t("bm.channels"), n: chanRows.length,
+      opts: () => groups(chanRows, (c) => c.group).map(([g, cs]) => h("optgroup", { label: g }, cs.map((c) => h("option", { value: c.id }, "# " + c.name)))) },
+    { id: "forum", label: t("bm.threads"), n: forumRows.length,
+      opts: () => forumRows.map((r) => h("option", { value: r.id }, r.title + " · " + statusLabel(r.status))) },
+    { id: "threads", label: t("bm.otherThreads"), n: places.threads.length,
+      opts: () => groups(places.threads, (r) => r.guild + " · " + r.parent).map(([g, rs]) => h("optgroup", { label: g }, rs.map((r) => h("option", { value: r.id }, r.name)))) },
+    { id: "dms", label: t("bm.dms"), n: places.dms.length,
+      opts: () => places.dms.map((r) => h("option", { value: r.id }, r.name)) },
+    { id: "link", label: t("bm.byLink"), n: null },
+  ];
+  const place = h("select", { onchange: () => { if (place.value) load(place.value); } });
   const link = h("input", { type: "text", placeholder: t("bm.paste") });
-  link.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); if (link.value.trim()) { place.value = ""; load(link.value.trim()); } } });
-  const loadBtn = h("button", { class: "btn primary", onclick: () => { const v = link.value.trim() || place.value; if (v) load(v); else toast(t("bm.first"), true); } }, t("bm.load"));
+  link.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); if (link.value.trim()) load(link.value.trim()); } });
+  const loadBtn = h("button", { class: "btn primary", onclick: () => { const v = kind === "link" ? link.value.trim() : place.value; if (v) load(v); else toast(t("bm.first"), true); } }, t("bm.load"));
+  const slot = h("div", { class: "grow" });
+  const note = h("div", { class: "muted small-text" });
+  const tabs = h("div", { class: "tabs" });
+  let kind = "";
+  function pick(id) {
+    kind = id;
+    const k = kinds.find((x) => x.id === id);
+    tabs.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.kind === id));
+    clear(slot);
+    note.textContent = "";
+    if (id === "link") { slot.appendChild(link); link.focus(); return; }
+    clear(place).appendChild(h("option", { value: "" }, k.n ? t("bm.pick") : t("bm.none")));
+    k.opts().forEach((o) => place.appendChild(o));
+    slot.appendChild(place);
+    if (id === "threads" && places.reason) note.textContent = places.reason;
+    if (id === "dms") note.textContent = t("bm.dmsNote");
+  }
+  kinds.forEach((k) => { const b = h("button", { class: "tab", onclick: () => pick(k.id) }, k.label, k.n === null ? null : h("span", { class: "tab-n" }, String(k.n))); b.dataset.kind = k.id; tabs.appendChild(b); });
+  pick(chanRows.length ? "channels" : forumRows.length ? "forum" : "link");
   let current = "";
 
   async function load(target) {
@@ -726,7 +759,7 @@ async function pageBotMsgs() {
     if (!(await confirmBox(t("bm.delTitle"), t("bm.delText") + "\n\n" + (m.content || "").slice(0, 200), t("common.delete"), true))) return;
     try { await api("DELETE", "/api/botmsgs/" + r.channel + "/" + m.id, {}); toast(t("bm.deleted")); load(r.channel); } catch (e) { fail(e); }
   }
-  return h("div", null, h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, field(t("bm.place"), place)), h("div", { class: "grow" }, field(t("bm.paste"), link)), loadBtn)), out);
+  return h("div", null, h("div", { class: "card bm-pick" }, tabs, h("div", { class: "row" }, slot, loadBtn), note), out);
 }
 
 /* ---------- supporters (Afdian orders -> a Discord role) ---------- */

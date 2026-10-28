@@ -242,6 +242,11 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
 .todo .grow { min-width: 0; }
 .legend ul { margin: 0 0 8px; padding-left: 20px; }
 .bm-head { margin: 0 0 8px; }
+.bm-pick .tabs { flex-wrap: wrap; margin-bottom: 12px; }
+.bm-pick .row > .grow > * { width: 100%; }
+.bm-pick > .small-text:not(:empty) { margin-top: 8px; }
+.tab-n { margin-left: 6px; padding: 0 7px; border-radius: 99px; background: var(--field); color: var(--muted); font-size: 12px; font-weight: 400; }
+.tab.active .tab-n { background: var(--soft-active); color: var(--accent-dark); }
 .bm + .bm { margin-top: 10px; }
 .bm.focus { border-color: var(--accent); }
 .counter { text-align: right; color: var(--muted); margin-top: 4px; }

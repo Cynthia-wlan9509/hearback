@@ -264,6 +264,22 @@ def test_bot_messages_in_a_forum_thread_keep_the_ledger_in_step(web_env):
     assert w.ok("GET", "/api/botmsgs?channel=" + a)["items"] == []
 
 
+def test_places_list_other_threads_and_dms_but_not_bug_posts(web_env):
+    from hearback.chatbot import Message
+    w, e = web_env, web_env.env
+    a, _ = two_threads(w)
+    ideas = e.fake.add_forum("ideas")
+    idea = e.fake.add_thread(ideas, "Cake of the week", "Mira", "lemon?")
+    w.srv.app.inbox.add(Message(id="9", channel_id="777", author_id="5", author_name="Mira", content="hi",
+                                ts="2026-10-24T10:00:00Z", guild_id=None, channel_name="Mira"))
+    r = w.ok("GET", "/api/places")
+    assert [(t["id"], t["name"], t["parent"]) for t in r["threads"]] == [(idea, "Cake of the week", "ideas")]
+    assert a not in {t["id"] for t in r["threads"]}
+    assert r["dms"] == [{"id": "777", "name": "Mira", "last": "2026-10-24T10:00:00Z"}] and r["reason"] == ""
+    chans = w.ok("GET", "/api/guilds")["items"][0]["channels"]
+    assert all("category" in c for c in chans)
+
+
 def test_new_routes_need_the_key_and_a_json_body(web_env):
     w = web_env
     ch = w.env.fake.add_channel("general")
