@@ -87,6 +87,7 @@ class Config:
     variants: dict[str, Variant] = field(default_factory=dict)
     language: str = "en"
     swlink_hourly_cap: int = 60      # [swlink] hourly_cap: model calls (replies and drafts) per hour
+    swlink_autostart: bool = False   # [swlink] autostart: connect the bot when `hearback web` starts
 
     # ---- paths
     @property
@@ -193,6 +194,10 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
         cfg.swlink_hourly_cap = max(1, int((raw.get("swlink") or {}).get("hourly_cap", 60)))
     except (TypeError, ValueError):
         raise HearbackError("[swlink] hourly_cap must be a whole number")
+    autostart = (raw.get("swlink") or {}).get("autostart", False)
+    if not isinstance(autostart, bool):
+        raise HearbackError("[swlink] autostart must be true or false")
+    cfg.swlink_autostart = autostart
     return cfg
 
 

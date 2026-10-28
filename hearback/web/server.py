@@ -1066,6 +1066,9 @@ def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int
     print("SWLink is running. Open this link (it carries this run's key):\n  %s\nPress Ctrl+C to stop." % url,
           flush=True)
     app.supporter_bot.start()
+    if cfg.swlink_autostart:
+        st = app.runtime.start()
+        print("Bot: %s%s" % (st.get("state", "?"), (" (%s)" % st["reason"]) if st.get("reason") else ""), flush=True)
     if open_browser:
         try:
             webbrowser.open(url)

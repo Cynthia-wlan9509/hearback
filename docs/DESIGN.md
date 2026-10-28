@@ -300,6 +300,7 @@ language = "en"               # en | zh — built-in reply templates
 
 [swlink]
 hourly_cap = 60               # model calls per hour (drafts + auto replies); past it messages are only recorded
+autostart = false             # true: connect the bot as soon as `hearback web` starts
 ```
 
 ## 5. Non-goals (v0.1)

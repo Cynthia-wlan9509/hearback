@@ -54,6 +54,17 @@ def test_bad_files_are_clear_errors(tmp_path):
     bad.write_text('[discord]\nsend_delay = "soon"\n', encoding="utf-8")
     with pytest.raises(HearbackError, match="send_delay"):
         load_config(bad)
+    bad.write_text('[swlink]\nautostart = "yes"\n', encoding="utf-8")
+    with pytest.raises(HearbackError, match="autostart"):
+        load_config(bad)
+
+
+def test_swlink_autostart_is_off_unless_asked_for(tmp_path):
+    f = tmp_path / "hearback.toml"
+    f.write_text("[swlink]\nhourly_cap = 9\n", encoding="utf-8")
+    assert load_config(f).swlink_autostart is False
+    f.write_text("[swlink]\nautostart = true\n", encoding="utf-8")
+    assert load_config(f).swlink_autostart is True
 
 
 def test_ids_may_be_written_as_numbers_or_strings(tmp_path):
