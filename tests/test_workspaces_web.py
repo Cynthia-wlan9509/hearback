@@ -99,23 +99,44 @@ def test_bot_side_stays_with_home(two):
     assert all(TOKEN.encode() not in b for b in w.bodies)
 
 
-def test_supporter_dm_goes_to_first_workspace_that_takes_it(two):
+def test_order_goes_to_the_server_where_the_person_still_needs_the_role(two):
+    from hearback.supporters import Person
     app = two.srv.app
+    home, second = app.home, app.spaces[1]
+    home.supporters_store.update({"role_id": "41"})
+    second.supporters_store.update({"role_id": "42"})
     calls = []
-
-    def taker(name, takes):
-        def handle(author, channel, content):
-            calls.append(name)
-            return takes
-        return handle
-
-    app.home.supporter_bot.handle_dm = taker("home", False)
-    app.spaces[1].supporter_bot.handle_dm = taker("second", True)
-    assert app._supporter_dm("1", "2", "order 202610300000000000000001") is True
-    assert calls == ["home", "second"]
+    for ws, name in ((home, "home"), (second, "second")):
+        ws.supporter_bot.dm_on = lambda: True
+        ws.supporter_bot.handle_dm = (lambda n: lambda a, c, t: calls.append(n) or True)(name)
+    roles = {"home": {"41"}, "second": set()}
+    app._member_in = lambda ws, uid: Person(id=uid, role_ids=roles["home" if ws is home else "second"])
+    order = "202610300000000000000001"
+    assert app._supporter_dm("7", "8", "my order " + order) and calls == ["second"]
+    roles["second"] = {"42"}                       # has both roles: the first server they are in
     calls.clear()
-    app.home.supporter_bot.handle_dm = taker("home", True)
-    assert app._supporter_dm("1", "2", "x") is True and calls == ["home"]
+    assert app._supporter_dm("7", "8", order) and calls == ["home"]
+    assert app._supporter_dm("7", "8", "no number here") is False
+
+
+def test_an_order_used_in_one_server_is_refused_in_the_other(two):
+    from hearback.supporters import Person
+    w, app = two, two.srv.app
+    home, second = app.home, app.spaces[1]
+    for ws in (home, second):
+        ws.supporter_bot.dm_on = lambda: True
+    order = "202610300000000000000002"
+    d = home.supporters_store.load()
+    d["claims"][order] = {"user_id": "5", "user_name": "x", "at": "", "plan_id": "", "amount": "1", "afdian_user": ""}
+    home.supporters_store.save(d)
+    second.supporter_bot.handle_dm = lambda *a: pytest.fail("must not be checked again")
+    app._member_in = lambda ws, uid: Person(id=uid) if ws is second else None
+    user = w.env.fake.add_user("Mira")
+    ch = w.env.fake._open_dm(user["id"])["id"]
+    assert app._supporter_dm(user["id"], ch, order) is True
+    said = [m["content"] for m in w.env.fake.messages.get(ch, [])]
+    assert len(said) == 1 and "another server" in said[0]
+    assert any(ev["action"] == "supporter_elsewhere" for ev in second.ledger.read_events(20))
 
 
 # ---------------------------------------------------------------- loading [swlink] workspaces

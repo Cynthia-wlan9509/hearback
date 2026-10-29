@@ -846,6 +846,15 @@ class SupporterBot:
         self.notify(client, notes)
         return {"reply_key": key, "granted": done, "failed": failed}
 
+    def dm_on(self) -> bool:
+        """Whether order-number DMs are handled here (on, and DM handling on). A damaged file says yes, so that
+        `handle_dm` logs it and falls back to the normal rules."""
+        try:
+            cfg = self.sup.store.load()
+        except SupporterError:
+            return True
+        return bool(cfg["enabled"] and cfg["dm_handling"])
+
     def handle_dm(self, author_id: str, channel_id: str, content: str) -> bool:
         """A DM with an order number. True when this handled it (the normal bot rules must then skip it)."""
         nums = extract_order_numbers(content)

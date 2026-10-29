@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -26,6 +27,7 @@ from hearback import __version__, actions, editor, review
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
+from hearback.codes import Codes
 from hearback.config import CONFIG_NAME, Config, load_config, save_discord_ids
 from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
@@ -33,7 +35,7 @@ from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complet
                           scrub_obj)
 from hearback.queue import Queue
 from hearback.supporters import (Person, SupporterBot, SupporterError, Supporters, SupporterStore, check_id,
-                                 check_order_no, clean_settings, mask, match_remarks)
+                                 check_order_no, clean_settings, extract_order_numbers, mask, match_remarks)
 from hearback.sync import format_delta, sync as run_sync
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
 
@@ -113,6 +115,8 @@ class Workspace:
                                      templates_dir=cfg.templates_dir, opener=afdian_opener)
         self.supporter_bot = SupporterBot(self.supporters, app._client_factory, lambda: app._supporter_guild(self),
                                           app._plain_bot_id)
+        self.codes = Codes(cfg.codes or {}, cfg.data_dir, lang=cfg.language, templates_dir=cfg.templates_dir,
+                           ledger=self.ledger, clock=app.clock, runner=app._code_runner)
 
 
 class App:
@@ -126,12 +130,13 @@ class App:
                  llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
                  clock: Callable[[], float] = time.time, supporters_store: SupporterStore | None = None,
                  afdian_opener: Callable[..., Any] | None = None, demo: bool = False,
-                 workspaces: Sequence[Config] | None = None):
+                 workspaces: Sequence[Config] | None = None, code_runner: Callable[..., Any] | None = None):
         self.demo = demo                 # fake data: tokens and keys are never saved
         self.secret = secret or secrets.token_urlsafe(24)
         self.port = 0
         self.clock = clock
         self._client_factory = client_factory or (lambda: DiscordClient(cfg.token()))
+        self._code_runner = code_runner or subprocess.run      # [codes] command; tests pass a fake
         self.llm = llm_store or LLMStore(cfg.data_dir)
         self.agents = AgentStore(cfg.data_dir)
         self.rules = RuleStore(cfg.data_dir)
@@ -313,7 +318,8 @@ class App:
         """Gateway callback (runs in a worker thread). A DM with an Afdian order number goes to the supporter flow
         (fixed template replies, no model) when that is switched on; everything else follows the channel rules."""
         if (msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id
-                and self._supporter_dm(msg.author_id, msg.channel_id, msg.content)):
+                and (self._supporter_dm(msg.author_id, msg.channel_id, msg.content)
+                     or self._codes_dm(msg.author_id, msg.channel_id, msg.content))):
             return
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
@@ -328,15 +334,97 @@ class App:
             answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
             if (not answered and not m.is_bot and m.author_id != bot_id
-                    and self._supporter_dm(m.author_id, m.channel_id, m.content)):
+                    and (self._supporter_dm(m.author_id, m.channel_id, m.content)
+                         or self._codes_dm(m.author_id, m.channel_id, m.content))):
                 orders += 1
             self.bot.inbox.add(m)
         if fresh:
             self.home.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(fresh), "orders": orders})
 
     def _supporter_dm(self, author_id: str, channel_id: str, content: str) -> bool:
-        """An order-number DM goes to the first workspace (home first) whose supporter DM handling is on."""
-        return any(ws.supporter_bot.handle_dm(author_id, channel_id, content) for ws in self.spaces)
+        """An order-number DM goes to one workspace whose supporter DM handling is on: with several, the first whose
+        server the person is in and still lacks that workspace's role, else the first they are in, else the first.
+        An order already claimed in another workspace is refused (one order, one server)."""
+        live = [ws for ws in self.spaces if ws.supporter_bot.dm_on()]
+        nums = extract_order_numbers(content)
+        if not live or not nums:
+            return False
+        ws = live[0] if len(live) == 1 else self._order_space(live, str(author_id))
+        for other in self.spaces:
+            if other is ws:
+                continue
+            try:
+                used = nums[0] in other.supporters_store.load()["claims"]
+            except SupporterError:
+                used = False
+            if used:
+                return self._claimed_elsewhere(ws, other, str(author_id), channel_id, nums[0])
+        return ws.supporter_bot.handle_dm(author_id, channel_id, content)
+
+    def _member_in(self, ws: Workspace, uid: str) -> Person | None:
+        guild = self._supporter_guild(ws)
+        if not guild:
+            return None
+        try:
+            return ws.supporter_bot.member(self._client_factory(), guild, uid)
+        except HearbackError:
+            return None
+
+    def _order_space(self, live: list[Workspace], uid: str) -> Workspace:
+        found = []
+        for ws in live:
+            p = self._member_in(ws, uid)
+            if p is None:
+                continue
+            try:
+                role = str(ws.supporters_store.load()["role_id"])
+            except SupporterError:
+                role = ""
+            if role and role not in {str(r) for r in p.role_ids}:
+                return ws
+            found.append(ws)
+        return found[0] if found else live[0]
+
+    def _claimed_elsewhere(self, ws: Workspace, other: Workspace, uid: str, channel_id: str, no: str) -> bool:
+        sup = ws.supporters
+        p = self._member_in(ws, uid) or Person(id=uid)
+        try:
+            client = self._client_factory()
+            ws.supporter_bot.say(client, channel_id, sup.text("claimed_elsewhere"))
+            ws.supporter_bot.notify(client, [sup.text("note_elsewhere", who=sup.who(p), order=mask(no),
+                                                       server=other.cfg.root.name)])
+        except HearbackError as e:
+            sup.event("bot:swlink", "supporter_error", {"error": scrub(e)[:300]})
+        sup.event("bot:swlink", "supporter_elsewhere", {"order": mask(no), "user": uid})
+        return True
+
+    def _codes_dm(self, author_id: str, channel_id: str, content: str) -> bool:
+        """A DM holding a device code, for a workspace with [codes] on: the member with its role gets the code from
+        the owner's command. With several such workspaces, the first whose server the person is in."""
+        live = [ws for ws in self.spaces if ws.codes.enabled]
+        dev = next((d for d in (ws.codes.find(content) for ws in live) if d), "")
+        if not dev:
+            return False
+        uid = str(author_id)
+        pick = None
+        for ws in live:
+            p = self._member_in(ws, uid)
+            if p is not None and (pick is None or ws.codes.role_id in {str(r) for r in p.role_ids}):
+                pick = (ws, p)
+                if ws.codes.role_id in {str(r) for r in p.role_ids}:
+                    break
+        try:
+            client = self._client_factory()
+            if pick is None:
+                live[0].supporter_bot.say(client, channel_id, live[0].codes.text("not_member"))
+                return True
+            ws, p = pick
+            reply, _code, notes = ws.codes.handle(p, dev)
+            ws.supporter_bot.say(client, channel_id, reply)
+            ws.supporter_bot.notify(client, notes)
+        except HearbackError as e:
+            (pick[0] if pick else live[0]).ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})
+        return True
 
     def directory(self, force: bool = False) -> tuple[list[dict], str]:
         """Servers and their text channels: from the live gateway when online, else REST (cached 60 s)."""

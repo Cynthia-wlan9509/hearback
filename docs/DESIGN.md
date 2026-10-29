@@ -309,8 +309,15 @@ both answer every DM). The folder SWLink starts in is the home workspace: its to
 own events, drafts, chat rules, inbox, models and agents live there. The page's server picker switches the forum,
 approvals, supporters, logs and forum ids to another folder, and narrows chat, channel rules and bot messages to that
 server's channels (home also lists servers no workspace claims). A DM shows under each server the person is in; when
-Discord will not list members, or the person is in none of them, it shows under home. A DM with an order number goes to the first workspace
-(home first) whose supporter DM handling is on. A folder that fails to load, repeats one, or holds a different bot
+Discord will not list members, or the person is in none of them, it shows under home. With supporter DM handling on in several workspaces, an
+order-number DM goes to the first one whose server the person is in and still lacks that workspace's role (else the
+first they are in, else the first); an order already claimed in one workspace is refused in the others (one order,
+one server).
+
+`[codes]` (hearback/codes.py) lets a member with a given role DM a device code and get back what the owner's issuing
+command prints: the command runs without a shell with `{device}` and `{note}` filled in, its last stdout line is the
+code, `.hearback/codes.json` keeps it so the same device gets the same code again, one device code never goes to two
+members, and `per_user` caps devices per member (more goes to the owner). Codes never enter events, logs or notices. A folder that fails to load, repeats one, or holds a different bot
 token is skipped and shown under the picker.
 
 ## 5. Non-goals (v0.1)

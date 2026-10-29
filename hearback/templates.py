@@ -128,6 +128,23 @@ EN: dict[str, str] = {
     ),
     "supporter_note_grant_failed": "[SWLink] Could not give the role $role to $who: $error",
     "supporter_note_left": "[SWLink] $who left the server before order $order could be checked. That check was dropped.",
+    "supporter_claimed_elsewhere": (
+        "This order number was already used in another server. One order works in one server only. "
+        "If this looks wrong, please contact the server owner."),
+    "supporter_note_elsewhere": "[SWLink] $who sent order $order, but it is already used in $server.",
+    "codes_ok": ("Here is the code for this device ($device):\n$code\n"
+                 "Copy all of it into the app. It works on this device only; please keep it to yourself."),
+    "codes_again": "This device ($device) already has a code. Here it is again:\n$code",
+    "codes_need_role": "Please finish the server's verification first, then send me your device code again.",
+    "codes_not_member": "I cannot find you in the server. Please join and finish verification, then send me your device code.",
+    "codes_taken": "This device code already has a code. If it is your device, please contact the server owner.",
+    "codes_limit": ("Each member gets a code for one device automatically. For another device, please contact "
+                    "the server owner; they have been told."),
+    "codes_failed": "The code could not be made just now. The server owner has been told and will get back to you.",
+    "codes_note_issued": "[SWLink] Sent $who a code for device $device.",
+    "codes_note_taken": "[SWLink] $who sent device $device, which already has a code for someone else. Nothing was sent.",
+    "codes_note_limit": "[SWLink] $who already has a code and sent another device $device (new phone?). Nothing was sent.",
+    "codes_note_failed": "[SWLink] Making a code for $who (device $device) failed: $error",
 }
 
 ZH: dict[str, str] = {
@@ -210,6 +227,19 @@ ZH: dict[str, str] = {
     ),
     "supporter_note_grant_failed": "[SWLink] 没能把身份组 $role 给 $who：$error",
     "supporter_note_left": "[SWLink] $who 在订单 $order 查完之前离开了服务器，这次核对已取消。",
+    "supporter_claimed_elsewhere": "这个订单号已经在另一个服务器用过了，一个订单只能用在一个服务器。有问题请联系群主。",
+    "supporter_note_elsewhere": "[SWLink] $who 发来订单 $order，但它已经在 $server 用过了。",
+    "codes_ok": "这是你这台手机的授权码（本机码 $device）：\n$code\n整串复制，回到游戏里粘贴。这个码只能这台手机用，请不要外传。",
+    "codes_again": "这台手机（本机码 $device）之前已经发过授权码，再发一次：\n$code",
+    "codes_need_role": "请先完成验证，再把本机码发给我。",
+    "codes_not_member": "我在群里找不到你。请先加入服务器并完成验证，再把本机码发给我。",
+    "codes_taken": "这个本机码已经领过授权码了。如果是你的手机，请联系群主。",
+    "codes_limit": "每人只能自动领一台手机的授权码。换手机或多一台手机，请联系群主，已经告诉群主了。",
+    "codes_failed": "授权码这会儿没能生成，已经告诉群主了，稍后会有人联系你。",
+    "codes_note_issued": "[SWLink] 给 $who 发了授权码（本机码 $device）。",
+    "codes_note_taken": "[SWLink] $who 发来的本机码 $device 已经发给别人了，这次没有发。",
+    "codes_note_limit": "[SWLink] $who 已经领过码，又发来新的本机码 $device（换手机？），没有自动发。",
+    "codes_note_failed": "[SWLink] 给 $who 生成授权码失败（本机码 $device）：$error",
 }
 
 BUILTIN = {"en": EN, "zh": ZH}
