@@ -18,6 +18,7 @@ let RENDER_SEQ = 0;
 let POLL = null;                 // timer of the running AI review, if any
 let SEEN_JOB = "";               // the review job this page has watched
 const HOWTO_HIDDEN = {};         // pages whose strip was dismissed (kept even when storage is blocked)
+let SPACES = null;               // /api/workspaces when SWLink has more than one server folder
 const $ = (id) => document.getElementById(id);
 
 function store(op, k, v) {
@@ -172,6 +173,8 @@ function renderShell() {
   if (main) main.classList.toggle("fill", PAGE === "conversations");      // the chat page uses the whole window height
   const side = clear($("side"));
   side.appendChild(h("div", { class: "brand" }, h("img", { src: "/swlink.svg", alt: "" }), h("span", null, "SWLink")));
+  const sp = spacePicker();
+  if (sp) side.appendChild(sp);
   for (const [gk, pages] of NAV) {
     side.appendChild(h("div", { class: "nav-group" }, t(gk)));
     for (const p of pages) side.appendChild(h("button", { class: "nav-item" + (p === PAGE ? " active" : ""), onclick: () => go(p) }, t("nav." + p)));
@@ -180,6 +183,27 @@ function renderShell() {
   renderTop();
   renderDemo();
   renderHowto();
+}
+/* server picker: one bot, several workspace folders ([swlink] workspaces); switching re-renders every page */
+function spacePicker() {
+  if (!SPACES || (SPACES.items.length < 2 && !SPACES.broken.length)) return null;
+  const sel = h("select", { class: "space-select", "aria-label": t("ws.label"), onchange: (ev) => openSpace(ev.target.value) },
+    SPACES.items.map((w) => h("option", { value: w.id, selected: w.current }, w.name + (w.home ? t("ws.home") : ""))));
+  const box = h("div", { class: "space" }, h("div", { class: "nav-group" }, t("ws.label")), sel);
+  for (const b of SPACES.broken) box.appendChild(h("div", { class: "sub small-text space-broken", title: b.error }, t("ws.broken", { f: b.folder })));
+  return box;
+}
+async function loadSpaces() {
+  try { SPACES = await api("GET", "/api/workspaces"); } catch (e) { SPACES = null; }
+}
+async function openSpace(id) {
+  try {
+    SPACES = await api("POST", "/api/workspaces/" + encodeURIComponent(id) + "/open", {});
+    const w = SPACES.items.find((x) => x.current);
+    if (w) toast(t("ws.opened", { n: w.name }));
+    await refreshStatus();
+  } catch (e) { fail(e); }
+  renderPage();
 }
 /* demo mode (fake data): a banner above every page */
 function renderDemo() {
@@ -247,6 +271,11 @@ function toggleLang() {
 }
 async function refreshStatus() {
   STATUS = await api("GET", "/api/status");
+  if (STATUS.workspaces > 1) {
+    const before = JSON.stringify(SPACES);
+    await loadSpaces();
+    if (JSON.stringify(SPACES) !== before) renderShell();   // only on a real change: a rebuilt <select> closes itself
+  }
   renderTop();
   renderDemo();
   const v = document.querySelector(".side-foot");

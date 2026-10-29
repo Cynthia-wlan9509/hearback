@@ -88,6 +88,7 @@ class Config:
     language: str = "en"
     swlink_hourly_cap: int = 60      # [swlink] hourly_cap: model calls (replies and drafts) per hour
     swlink_autostart: bool = False   # [swlink] autostart: connect the bot when `hearback web` starts
+    swlink_workspaces: list[str] = field(default_factory=list)   # [swlink] workspaces: other folders, same bot
 
     # ---- paths
     @property
@@ -198,6 +199,10 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     if not isinstance(autostart, bool):
         raise HearbackError("[swlink] autostart must be true or false")
     cfg.swlink_autostart = autostart
+    spaces = (raw.get("swlink") or {}).get("workspaces", [])
+    if not isinstance(spaces, list) or not all(isinstance(x, str) and x.strip() for x in spaces):
+        raise HearbackError("[swlink] workspaces must be a list of folder paths")
+    cfg.swlink_workspaces = [x.strip() for x in spaces]
     return cfg
 
 

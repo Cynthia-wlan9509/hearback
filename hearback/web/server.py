@@ -26,7 +26,7 @@ from hearback import __version__, actions, editor, review
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
-from hearback.config import Config, load_config, save_discord_ids
+from hearback.config import CONFIG_NAME, Config, load_config, save_discord_ids
 from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
 from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
@@ -97,42 +97,117 @@ class Request:
         self.method, self.path, self.query, self.body, self.groups = method, path, query, body, groups
 
 
+class Workspace:
+    """One SWLink folder (its hearback.toml and .hearback/) as the console sees it: the bug forum ledger, the
+    approval queue, AI review and supporters of that server. The bot connection, chat rules, inbox, models and
+    agents are the bot's, so they belong to the App and stay the same whichever workspace is open."""
+
+    def __init__(self, app: "App", cfg: Config, *, supporters_store: SupporterStore | None = None,
+                 afdian_opener: Callable[..., Any] | None = None):
+        self.cfg = cfg
+        self.ledger = Ledger(cfg.ledger_path)
+        self.queue = Queue(cfg.queue_dir, self.ledger, protected=cfg.protected_paths())
+        self.review = review.ReviewRunner(self.ledger, app.agents, app._review_llm, app._model_of)
+        self.supporters_store = supporters_store or SupporterStore(cfg.data_dir)
+        self.supporters = Supporters(self.supporters_store, ledger=self.ledger, clock=app.clock, lang=cfg.language,
+                                     templates_dir=cfg.templates_dir, opener=afdian_opener)
+        self.supporter_bot = SupporterBot(self.supporters, app._client_factory, lambda: app._supporter_guild(self),
+                                          app._plain_bot_id)
+
+
 class App:
-    """All state and logic behind the JSON API; the HTTP layer only routes to it."""
+    """All state and logic behind the JSON API; the HTTP layer only routes to it.
+
+    `home` is the workspace SWLink was started in: its token runs the one bot connection, and the bot's own
+    events and drafts go to its ledger and queue. `[swlink] workspaces` adds folders for other servers the same
+    bot is in; the page switches `cur` between them (forum, approvals, supporters, logs, forum ids)."""
 
     def __init__(self, cfg: Config, *, client_factory: Callable[[], DiscordClient] | None = None,
                  llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
                  clock: Callable[[], float] = time.time, supporters_store: SupporterStore | None = None,
-                 afdian_opener: Callable[..., Any] | None = None, demo: bool = False):
-        self.cfg = cfg
+                 afdian_opener: Callable[..., Any] | None = None, demo: bool = False,
+                 workspaces: Sequence[Config] | None = None):
         self.demo = demo                 # fake data: tokens and keys are never saved
         self.secret = secret or secrets.token_urlsafe(24)
         self.port = 0
         self.clock = clock
         self._client_factory = client_factory or (lambda: DiscordClient(cfg.token()))
-        self.ledger = Ledger(cfg.ledger_path)
-        self.queue = Queue(cfg.queue_dir, self.ledger, protected=cfg.protected_paths())
         self.llm = llm_store or LLMStore(cfg.data_dir)
         self.agents = AgentStore(cfg.data_dir)
         self.rules = RuleStore(cfg.data_dir)
         self.inbox = Inbox(cfg.data_dir)
-        self.review = review.ReviewRunner(self.ledger, self.agents, self._review_llm, self._model_of)
-        self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
+        self._dir_cache: tuple[float, list[dict], str] | None = None
+        self.home = Workspace(self, cfg, supporters_store=supporters_store, afdian_opener=afdian_opener)
+        self.cur = self.home
+        self.spaces = [self.home]
+        self.broken: list[dict] = []     # [swlink] workspaces entries that could not be opened: {folder, error}
+        for c in (workspaces if workspaces is not None else self._load_spaces(cfg)):
+            self.spaces.append(Workspace(self, c, afdian_opener=afdian_opener))
+        self.bot = Chatbot(self.rules, self.agents, self.inbox, self.home.ledger, self.home.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
                                                  self.on_missed, lambda: self.bot.inbox.last_dm_ids())
-        self.supporters_store = supporters_store or SupporterStore(cfg.data_dir)
-        self.supporters = Supporters(self.supporters_store, ledger=self.ledger, clock=clock, lang=cfg.language,
-                                     templates_dir=cfg.templates_dir, opener=afdian_opener)
-        self.supporter_bot = SupporterBot(self.supporters, self._client_factory, self._supporter_guild, self._plain_bot_id)
         self._members_cache: tuple[float, list[dict]] | None = None
-        self._dir_cache: tuple[float, list[dict], str] | None = None
         self._bot_id = self._bot_name = ""
         self.routes = self._build_routes()
 
+    # ---- the open workspace (what the forum, approvals, supporters, logs and forum-id pages show)
+    cfg = property(lambda self: self.cur.cfg)
+    ledger = property(lambda self: self.cur.ledger)
+    queue = property(lambda self: self.cur.queue)
+    review = property(lambda self: self.cur.review)
+    supporters_store = property(lambda self: self.cur.supporters_store)
+    supporters = property(lambda self: self.cur.supporters)
+    supporter_bot = property(lambda self: self.cur.supporter_bot)
+
+    def _load_spaces(self, cfg: Config) -> list[Config]:
+        """The configs named in `[swlink] workspaces` (folders, relative to this config). A folder that does not
+        load, repeats one, or holds a different bot token is skipped and listed in `broken`."""
+        out: list[Config] = []
+        seen = {cfg.root.resolve()}
+        for entry in cfg.swlink_workspaces:
+            d = Path(entry)
+            d = (d if d.is_absolute() else cfg.root / d).resolve()
+            folder = d.parent.name if d.name == CONFIG_NAME else d.name
+            try:
+                c = load_config(d if d.is_file() else d / CONFIG_NAME)
+                if c.root.resolve() in seen:
+                    raise HearbackError("this folder is already open")
+                if not self._same_bot(cfg, c):
+                    raise HearbackError("it holds a different bot token; one SWLink runs one bot")
+            except HearbackError as e:
+                self.broken.append({"folder": folder, "error": scrub(str(e))[:200]})
+                continue
+            seen.add(c.root.resolve())
+            out.append(c)
+        return out
+
+    @staticmethod
+    def _same_bot(home: Config, other: Config) -> bool:
+        """True when `other` has no token of its own or the same one as `home` (compared, never shown)."""
+        try:
+            theirs = other.token()
+        except HearbackError:
+            return True
+        register_secret(theirs)
+        try:
+            mine = home.token()
+        except HearbackError:
+            return False
+        return hmac.compare_digest(theirs.encode(), mine.encode())
+
+    def start_background(self) -> None:
+        """Supporter retry loops of every workspace (REST only, whichever workspace the page has open)."""
+        for ws in self.spaces:
+            ws.supporter_bot.start()
+
+    def stop_background(self) -> None:
+        for ws in self.spaces:
+            ws.supporter_bot.stop()
+
     # ---- plumbing
     def _token(self) -> str:
-        t = self.cfg.token()
+        t = self.home.cfg.token()
         register_secret(t)
         return t
 
@@ -152,7 +227,7 @@ class App:
             self._token()
         except HearbackError:
             return {"set": False, "source": "none"}
-        env = (os.environ.get(self.cfg.token_env) or "").strip()
+        env = (os.environ.get(self.home.cfg.token_env) or "").strip()
         return {"set": True, "source": "env" if env else "file"}
 
     def _bot_me(self) -> tuple[str, str]:
@@ -189,21 +264,21 @@ class App:
             return profile_id
 
     def _send_auto(self, channel: str, text: str) -> list[str]:
-        return actions.post(self.client(), self.ledger, channel, text)["message_ids"]
+        return actions.post(self.client(), self.home.ledger, channel, text)["message_ids"]
 
     def _bot_state(self, state: str, reason: str) -> None:
         """Gateway state changes go to the event log, so 'was the bot online?' has an answer later."""
-        self.ledger.event("bot:swlink", "bot_state", None, {"state": state, "reason": reason[:200]} if reason else {"state": state})
+        self.home.ledger.event("bot:swlink", "bot_state", None, {"state": state, "reason": reason[:200]} if reason else {"state": state})
 
     def on_message(self, msg: Message, bot_id: str) -> None:
         """Gateway callback (runs in a worker thread). A DM with an Afdian order number goes to the supporter flow
         (fixed template replies, no model) when that is switched on; everything else follows the channel rules."""
         if (msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id
-                and self.supporter_bot.handle_dm(msg.author_id, msg.channel_id, msg.content)):
+                and self._supporter_dm(msg.author_id, msg.channel_id, msg.content)):
             return
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
-            self.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
+            self.home.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
 
     def on_missed(self, msgs: list[Message], bot_id: str) -> None:
         """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
@@ -214,11 +289,15 @@ class App:
             answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
             if (not answered and not m.is_bot and m.author_id != bot_id
-                    and self.supporter_bot.handle_dm(m.author_id, m.channel_id, m.content)):
+                    and self._supporter_dm(m.author_id, m.channel_id, m.content)):
                 orders += 1
             self.bot.inbox.add(m)
         if fresh:
-            self.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(fresh), "orders": orders})
+            self.home.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(fresh), "orders": orders})
+
+    def _supporter_dm(self, author_id: str, channel_id: str, content: str) -> bool:
+        """An order-number DM goes to the first workspace (home first) whose supporter DM handling is on."""
+        return any(ws.supporter_bot.handle_dm(author_id, channel_id, content) for ws in self.spaces)
 
     def directory(self, force: bool = False) -> tuple[list[dict], str]:
         """Servers and their text channels: from the live gateway when online, else REST (cached 60 s)."""
@@ -322,6 +401,8 @@ class App:
         add("GET", "/api/guilds/(\\d+)/roles", self.api_guild_roles)
         add("GET", "/api/guilds/(\\d+)/members", self.api_guild_members)
         add("GET", "/api/logs", self.api_logs)
+        add("GET", "/api/workspaces", self.api_workspaces)
+        add("POST", "/api/workspaces/(\\d+)/open", self.api_workspace_open)
         add("GET", "/api/settings", self.api_settings)
         add("PUT", "/api/settings/token", self.api_token)
         add("PUT", "/api/settings/forum", self.api_settings_forum)
@@ -360,6 +441,7 @@ class App:
             "forum_to_review": len(review.pending_threads(self.ledger.load())) if self.cfg.forum_id else 0,
             "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
             "token_set": tok["set"], "supporters": supporters,
+            "workspaces": len(self.spaces) + len(self.broken),
             "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
 
     def api_bot_start(self, q: Request) -> tuple[int, Any]:
@@ -769,10 +851,11 @@ class App:
         return 200, {"deleted": message}
 
     # ---- supporters (Afdian orders -> a Discord role)
-    def _supporter_guild(self) -> str:
-        """The server the supporter role lives in: the configured one, else the only one the bot is in."""
-        if self.cfg.guild_id:
-            return self.cfg.guild_id
+    def _supporter_guild(self, ws: Workspace | None = None) -> str:
+        """The server the supporter role lives in: the workspace's configured one, else the only one the bot is in."""
+        ws = ws or self.cur
+        if ws.cfg.guild_id:
+            return ws.cfg.guild_id
         guilds, _reason = self.directory()
         return str(guilds[0]["id"]) if len(guilds) == 1 else ""
 
@@ -960,6 +1043,25 @@ class App:
         events = self.ledger.read_events(limit)
         return 200, {"items": scrub_obj(list(reversed(events)))}
 
+    # ---- workspaces
+    def api_workspaces(self, q: Request) -> tuple[int, Any]:
+        known = self.directory()[0] if self.token_state()["set"] else []     # live guilds, else REST cached 60 s
+        names = {str(g["id"]): str(g.get("name") or "") for g in known}
+        items = [{"id": str(i), "name": names.get(ws.cfg.guild_id) or ws.cfg.root.name, "folder": ws.cfg.root.name,
+                  "guild_id": ws.cfg.guild_id, "forum_id": ws.cfg.forum_id, "home": ws is self.home,
+                  "current": ws is self.cur} for i, ws in enumerate(self.spaces)]
+        return 200, {"items": items, "broken": list(self.broken)}
+
+    def api_workspace_open(self, q: Request) -> tuple[int, Any]:
+        i = int(q.groups[0])
+        if i >= len(self.spaces):
+            raise ApiError(404, "no such workspace")
+        if self.spaces[i] is not self.cur:
+            self.cur = self.spaces[i]
+            self._members_cache = None       # member lists belong to one server
+            self.ledger.event(ACTOR, "workspace_open", None, {"folder": self.cfg.root.name})
+        return self.api_workspaces(q)
+
     # ---- settings
     def api_settings(self, q: Request) -> tuple[int, Any]:
         bot_id = self.runtime.status().get("bot_id") or ""
@@ -993,7 +1095,7 @@ class App:
             tok = tok[4:].strip()
         if not tok or len(tok) > 300 or any(c.isspace() for c in tok):
             raise ApiError(400, "the token is empty or contains spaces")
-        path = self.cfg.token_path
+        path = self.home.cfg.token_path      # the bot's token: the home workspace runs the connection
         ensure_data_dir(path.parent)
         atomic_write_text(path, tok + "\n")
         try:
@@ -1142,7 +1244,7 @@ def serve(srv: _Server, cfg: Config, open_browser: bool = True, url_extra: str =
     url = "http://127.0.0.1:%d/#k=%s%s" % (app.port, app.secret, url_extra)
     print("SWLink is running. Open this link (it carries this run's key):\n  %s\nPress Ctrl+C to stop." % url,
           flush=True)
-    app.supporter_bot.start()
+    app.start_background()
     if cfg.swlink_autostart:
         st = app.runtime.start()
         print("Bot: %s%s" % (st.get("state", "?"), (" (%s)" % st["reason"]) if st.get("reason") else ""), flush=True)
@@ -1156,7 +1258,7 @@ def serve(srv: _Server, cfg: Config, open_browser: bool = True, url_extra: str =
     except KeyboardInterrupt:
         pass
     finally:
-        app.supporter_bot.stop()
+        app.stop_background()
         app.runtime.stop()
         srv.server_close()
     return 0
