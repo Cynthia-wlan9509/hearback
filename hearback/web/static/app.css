@@ -141,6 +141,8 @@ tr:last-child td { border-bottom: 0; }
 .bubble { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px; min-width: 0; }
 .msg.self .bubble { background: var(--soft-active); border-color: var(--soft-active); }
 .bubble .who { font-size: 12px; color: var(--sub); }
+.bubble .who .link-btn { margin-left: 8px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.bubble .who .link-btn:hover { text-decoration: underline; }
 .bubble .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer { padding: 12px 16px; border-top: 1px solid var(--line); }
 .composer textarea { min-height: 64px; }

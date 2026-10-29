@@ -547,22 +547,19 @@ def test_runtime_reads_back_dms_missed_while_closed(monkeypatch):
     known_dm.msgs = [msg(5, known_dm, 7, "old"), msg(9, known_dm, 7, "missed")]
     new_dm = DM(12, [])
     new_dm.msgs = [msg(20, new_dm, 8, "hello")]
-    member = ns(bot=False, dm_channel=None)
+    async def get_members(gid, limit, after):
+        return [{"user": {"id": "8"}}, {"user": {"id": "9", "bot": True}}]
 
-    async def create_dm():
+    async def create_dm(user):
+        assert user.id == 8
         return new_dm
-    member.create_dm = create_dm
-    other_bot = ns(bot=True)
-
-    async def fetch_members(limit):
-        for mm in (member, other_bot):
-            yield mm
 
     orig = mod.Client.__init__
 
     def init(self, intents):
         orig(self, intents)
-        self.guilds[0].fetch_members = fetch_members
+        self.http = ns(get_members=get_members)
+        self.create_dm = create_dm
         self.get_channel = lambda cid: known_dm if cid == 11 else None
     monkeypatch.setattr(mod.Client, "__init__", init)
     monkeypatch.setitem(sys.modules, "discord", mod)
@@ -574,5 +571,13 @@ def test_runtime_reads_back_dms_missed_while_closed(monkeypatch):
     while not got and time.monotonic() < end:
         time.sleep(0.01)
     rt.stop()
-    assert [(m.channel_id, m.content) for m in got[0]] == [("11", "missed"), ("12", "hello")]
-    assert known_dm.after[0].id == 5 and not isinstance(new_dm.after[0], Object)
+    assert [(m.channel_id, m.content) for m in got[0]] == [("11", "old"), ("11", "missed"), ("12", "hello")]
+    assert not isinstance(known_dm.after[0], Object)        # read again from a date: gaps get filled too
+
+
+def test_a_dm_is_named_after_the_person_not_the_bot(tmp_path):
+    ib = Inbox(tmp_path)
+    ib.add(Message(id="1", channel_id="dm", author_id=BOT, author_name="Helper", content="hi", ts="t1", is_bot=True,
+                   channel_name="Helper"))
+    ib.add(Message(id="2", channel_id="dm", author_id="u", author_name="Mira", content="hey", ts="t2"))
+    assert ib.conversations()[0]["channel_name"] == "Mira" and ib.has("dm", "2") and not ib.has("dm", "3")

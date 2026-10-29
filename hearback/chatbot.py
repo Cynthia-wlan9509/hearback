@@ -31,7 +31,7 @@ TRIGGERS = ("mention", "all")
 HISTORY_LIMIT = 20
 INBOX_MEM = 200                   # messages kept in memory per conversation
 INBOX_FILE_CAP = 5000             # lines kept in inbox.jsonl
-CATCHUP_DAYS = 7                  # DMs missed while closed: how far back a conversation we hold nothing of is read
+CATCHUP_DAYS = 30                 # DMs missed while closed: how far back a conversation we hold nothing of is read
 CATCHUP_MEMBERS = 500             # members whose DMs are checked on connect (more than this: only known DMs)
 CONTENT_LIMIT = 1500
 UNTRUSTED = "UNTRUSTED DISCORD TEXT"
@@ -348,6 +348,10 @@ class Inbox:
             atomic_write_text(self.path, "\n".join(out) + ("\n" if out else ""))
             self._lines = len(out)
 
+    def has(self, channel_id: str, message_id: str) -> bool:
+        with self._lock:
+            return any(m.id == message_id for m in self._by_chan.get(channel_id, ()))
+
     def last_dm_ids(self) -> dict[str, str]:
         """Newest message id held per DM conversation (where reading missed DMs resumes)."""
         with self._lock:
@@ -369,9 +373,13 @@ class Inbox:
                 if not q:
                     continue
                 last = q[-1]
-                first = next((m for m in q if not m.is_bot), last)
+                first = next((m for m in q if not m.is_bot), None)
+                if last.kind == "dm" and first is not None:      # a DM is named after the person, never the bot
+                    name = first.author_name
+                else:
+                    name = last.channel_name or (first or last).author_name
                 out.append({"id": cid, "kind": last.kind, "guild_id": last.guild_id or "",
-                            "guild_name": last.guild_name, "channel_name": last.channel_name or first.author_name,
+                            "guild_name": last.guild_name, "channel_name": name,
                             "preview": short(last.content, 80), "last_ts": last.ts})
             return sorted(out, key=lambda c: c["last_ts"], reverse=True)
 
@@ -570,7 +578,8 @@ class BotRuntime:
 
     async def _catch_up(self, discord: Any, client: Any) -> None:
         """DMs that came in while SWLink was closed: the gateway never replays them, so each DM conversation's
-        history after the newest message held is read (members' DMs too, when the bot may list members)."""
+        recent history is read again (members' DMs too, when the bot may list members); the receiver skips what it
+        already holds, which also fills gaps before the newest message held."""
         import asyncio
         bot_id = self.status()["bot_id"]
         known = dict(self._known_dms() if self._known_dms else {})
@@ -581,20 +590,20 @@ class BotRuntime:
             except Exception:
                 continue
         for g in list(getattr(client, "guilds", []) or []):
-            try:
-                async for mem in g.fetch_members(limit=CATCHUP_MEMBERS):
-                    if getattr(mem, "bot", False):
+            try:     # REST, not guild.fetch_members (that one also wants the members intent on the gateway)
+                for d in await client.http.get_members(g.id, CATCHUP_MEMBERS, None):
+                    u = d.get("user") or {}
+                    if u.get("bot") or not u.get("id"):
                         continue
-                    dm = getattr(mem, "dm_channel", None) or await mem.create_dm()   # opens nothing the user sees
+                    dm = await client.create_dm(discord.Object(id=int(u["id"])))   # opens nothing the user sees
                     chans.setdefault(str(dm.id), dm)
             except Exception:       # listing members needs the Server Members intent; known DMs are still read
                 continue
         since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=CATCHUP_DAYS)
         missed: list[Message] = []
         for cid, ch in chans.items():
-            after = discord.Object(id=int(known[cid])) if cid in known else since
             try:
-                async for m in ch.history(limit=100, after=after, oldest_first=True):
+                async for m in ch.history(limit=200, after=since, oldest_first=True):
                     missed.append(message_from_discord(m, bot_id))
             except Exception as e:
                 self._log_error(e)

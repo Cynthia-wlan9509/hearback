@@ -377,7 +377,9 @@ async function pageConversations() {
           const text = [m.content, m.attachments ? t("conv.attach", { n: m.attachments }) : ""].filter(Boolean).join("\n");
           body.appendChild(h("div", { class: "msg" + (m.is_self ? " self" : "") },
             h("div", { class: "avatar" }, img ? h("img", { src: img, alt: "" }) : (m.author_name || "?").slice(0, 1).toUpperCase()),
-            h("div", { class: "bubble" }, h("div", { class: "who" }, m.author_name + " · " + fmtTime(m.time)), h("div", { class: "txt" }, text))));
+            h("div", { class: "bubble" }, h("div", { class: "who" }, m.author_name + " · " + fmtTime(m.time),
+              m.is_self && m.content ? h("button", { class: "link-btn", onclick: () => editBotMessage(c.id, m, load) }, t("bm.edit")) : null),
+              h("div", { class: "txt" }, text))));
         }
         body.scrollTop = body.scrollHeight;          // the message box only; never the page
       } catch (e) {
@@ -777,24 +779,27 @@ async function pageBotMsgs() {
       h("div", { class: "txt" }, m.content || (m.attachments.length ? m.attachments.join(", ") : "")),
       m.content && m.attachments.length ? h("div", { class: "small-text muted" }, m.attachments.join(", ")) : null);
   }
-  function editMsg(r, m) {
-    const ta = h("textarea", { value: m.content });
-    ta.rows = 8;
-    const counter = h("div", { class: "counter small-text" });
-    const upd = () => { counter.textContent = t("bm.counter", { n: ta.value.length }); counter.classList.toggle("over", ta.value.length > 2000); };
-    ta.addEventListener("input", upd); upd();
-    modal(t("bm.editTitle"), h("div", null, ta, counter, h("div", { class: "row end" }, ...polishButtons(ta, () => ({ channel: r.channel }), true)),
-      h("div", { class: "sub small-text" }, t("bm.sameSyncNote"))), [
-      { label: t("common.cancel") },
-      { label: t("common.save"), cls: "primary", run: async () => {
-        try { await api("PUT", "/api/botmsgs/" + r.channel + "/" + m.id, { text: ta.value }); toast(t("common.saved")); load(r.channel); }
-        catch (e) { fail(e); return false; } } }]);
-  }
+  function editMsg(r, m) { editBotMessage(r.channel, m, () => load(r.channel)); }
   async function delMsg(r, m) {
     if (!(await confirmBox(t("bm.delTitle"), t("bm.delText") + "\n\n" + (m.content || "").slice(0, 200), t("common.delete"), true))) return;
     try { await api("DELETE", "/api/botmsgs/" + r.channel + "/" + m.id, {}); toast(t("bm.deleted")); load(r.channel); } catch (e) { fail(e); }
   }
   return h("div", null, h("div", { class: "card bm-pick" }, tabs, h("div", { class: "row" }, slot, loadBtn), note), out);
+}
+
+/* the editor for one of the bot's own messages (bot messages page and the chat view) */
+function editBotMessage(channel, m, done) {
+  const ta = h("textarea", { value: m.content });
+  ta.rows = 8;
+  const counter = h("div", { class: "counter small-text" });
+  const upd = () => { counter.textContent = t("bm.counter", { n: ta.value.length }); counter.classList.toggle("over", ta.value.length > 2000); };
+  ta.addEventListener("input", upd); upd();
+  modal(t("bm.editTitle"), h("div", null, ta, counter, h("div", { class: "row end" }, ...polishButtons(ta, () => ({ channel }), true)),
+    h("div", { class: "sub small-text" }, t("bm.sameSyncNote"))), [
+    { label: t("common.cancel") },
+    { label: t("common.save"), cls: "primary", run: async () => {
+      try { await api("PUT", "/api/botmsgs/" + channel + "/" + m.id, { text: ta.value }); toast(t("common.saved")); done(); }
+      catch (e) { fail(e); return false; } } }]);
 }
 
 /* ---------- supporters (Afdian orders -> a Discord role) ---------- */

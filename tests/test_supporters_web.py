@@ -743,6 +743,8 @@ def test_missed_dms_are_kept_and_only_an_unanswered_order_is_claimed_late(sup):
             Message(id="103", channel_id=ch_j, author_id=bot, author_name="bot", content="got it", is_bot=True)]
     sup.app.on_missed(msgs, bot)
     assert list(sup.store.load()["claims"]) == [late]
+    sup.app.on_missed(msgs, bot)                             # read again on the next connect: nothing new, no repeat
+    assert list(sup.store.load()["claims"]) == [late]
     assert {c["id"] for c in sup.app.inbox.conversations()} == {ch_m, ch_j}
     ev = [json.loads(l) for l in (sup.app.cfg.data_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {"messages": 3, "orders": 1} in [e["detail"] for e in ev if e["action"] == "dm_catchup"]

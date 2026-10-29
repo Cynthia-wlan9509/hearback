@@ -209,15 +209,16 @@ class App:
         """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
         Afdian order nobody answered still goes to the supporter flow, nothing else gets a late reply."""
         orders = 0
-        for m in msgs:
+        fresh = [m for m in msgs if not self.inbox.has(m.channel_id, m.id)]
+        for m in fresh:
             answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
             if (not answered and not m.is_bot and m.author_id != bot_id
                     and self.supporter_bot.handle_dm(m.author_id, m.channel_id, m.content)):
                 orders += 1
             self.bot.inbox.add(m)
-        if msgs:
-            self.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(msgs), "orders": orders})
+        if fresh:
+            self.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(fresh), "orders": orders})
 
     def directory(self, force: bool = False) -> tuple[list[dict], str]:
         """Servers and their text channels: from the live gateway when online, else REST (cached 60 s)."""
