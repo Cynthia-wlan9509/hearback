@@ -300,6 +300,9 @@ class Inbox:
 
     def add(self, m: Message) -> None:
         with self._lock:
+            q = self._by_chan.get(m.channel_id)
+            if q and any(x.id == m.id for x in q):        # e.g. our own reply, added on send and again from the gateway
+                return
             self._put(m)
             if not self.path:
                 return
@@ -404,6 +407,10 @@ class Chatbot:
                 self._last_reply[msg.channel_id] = now
                 self._model_times.append(now)
         if action == "ignore":
+            if bot_id and msg.author_id == bot_id:
+                # the bot's own words, also when another program sent them with the same token: keep them so the
+                # conversation shows up (DMs it started) and later drafts see them; never answered
+                self.inbox.add(msg)
             return {"action": "ignore"}
         self.inbox.add(msg)
         if action == "record":
@@ -448,8 +455,9 @@ GUILD_EVENTS = ("on_guild_join", "on_guild_remove", "on_guild_channel_create", "
 class BotRuntime:
     """Runs the Discord gateway connection in a background thread with its own event loop (discord.py, lazy)."""
 
-    def __init__(self, token_fn: Callable[[], str], on_message: Callable[[Message, str], Any]):
-        self._token_fn, self._on_message = token_fn, on_message
+    def __init__(self, token_fn: Callable[[], str], on_message: Callable[[Message, str], Any],
+                 on_state: Callable[[str, str], Any] | None = None):
+        self._token_fn, self._on_message, self._on_state = token_fn, on_message, on_state
         self._lock = threading.Lock()
         self._state, self._reason = "offline", ""
         self._bot_id, self._bot_name = "", ""
@@ -467,7 +475,13 @@ class BotRuntime:
 
     def _set(self, state: str, reason: str = "") -> None:
         with self._lock:
+            changed = (state, scrub(reason)) != (self._state, self._reason)
             self._state, self._reason = state, scrub(reason)
+        if changed and self._on_state:
+            try:
+                self._on_state(state, scrub(reason))
+            except Exception:        # a log write must never take the connection down
+                pass
 
     def guilds(self) -> list[dict]:
         with self._lock:

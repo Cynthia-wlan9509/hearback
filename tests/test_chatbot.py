@@ -486,3 +486,26 @@ def test_runtime_snapshot_tells_what_the_bot_member_may_do_per_channel(monkeypat
     for name in ("on_guild_role_update", "on_member_update"):           # a role change must refresh the answer
         assert name in mod.client.handlers
     rt.stop()
+
+
+def test_the_bots_own_messages_are_kept_but_never_answered(tmp_path):
+    b = Bench(tmp_path, RULE_AUTO)
+    res = b.bot.handle(msg("Your license code: L1.x", channel="dm1", guild=None, author=BOT, bot=True, mid="900"), BOT)
+    assert res["action"] == "ignore" and b.calls == [] and b.env.fake.writes() == []
+    convs = b.bot.inbox.conversations()
+    assert [c["id"] for c in convs] == ["dm1"]                          # a DM another program started still shows up
+    b.bot.handle(msg("again", channel="dm1", guild=None, author=BOT, bot=True, mid="900"), BOT)
+    assert len(b.bot.inbox.history("dm1")) == 1                            # the same message is kept once
+    other = b.bot.handle(msg("beep", channel="dm2", guild=None, author="999", bot=True, mid="901"), BOT)
+    assert other["action"] == "ignore" and [c["id"] for c in b.bot.inbox.conversations()] == ["dm1"]
+
+
+def test_runtime_reports_state_changes(monkeypatch):
+    mod = fake_discord()
+    monkeypatch.setitem(sys.modules, "discord", mod)
+    seen = []
+    rt = BotRuntime(lambda: "tok_FAKE_TOKEN_000111", lambda m, b: None, lambda s, r: seen.append(s))
+    rt.start()
+    assert wait_for(rt, "online")
+    rt.stop()
+    assert "online" in seen and seen[-1] == "offline" and seen.count("online") == 1

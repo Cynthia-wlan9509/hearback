@@ -119,7 +119,7 @@ class App:
         self.review = review.ReviewRunner(self.ledger, self.agents, self._review_llm, self._model_of)
         self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
-        self.runtime = runtime or BotRuntime(self._token, self.on_message)
+        self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state)
         self.supporters_store = supporters_store or SupporterStore(cfg.data_dir)
         self.supporters = Supporters(self.supporters_store, ledger=self.ledger, clock=clock, lang=cfg.language,
                                      templates_dir=cfg.templates_dir, opener=afdian_opener)
@@ -189,6 +189,10 @@ class App:
 
     def _send_auto(self, channel: str, text: str) -> list[str]:
         return actions.post(self.client(), self.ledger, channel, text)["message_ids"]
+
+    def _bot_state(self, state: str, reason: str) -> None:
+        """Gateway state changes go to the event log, so 'was the bot online?' has an answer later."""
+        self.ledger.event("bot:swlink", "bot_state", None, {"state": state, "reason": reason[:200]} if reason else {"state": state})
 
     def on_message(self, msg: Message, bot_id: str) -> None:
         """Gateway callback (runs in a worker thread). A DM with an Afdian order number goes to the supporter flow
