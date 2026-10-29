@@ -222,6 +222,25 @@ Human-only tools write directly by design: `hearback editor` (edit/delete the bo
 
 v0.2 (in development): the core is pull-based and runs when you run it; SWLink adds an optional always-on chat bot. Discord forum channels for the bug desk. Issues and PRs welcome.
 
+## Citing and credit
+
+If SWLink / Hearback helps your project, paper or talk, please cite it. GitHub's **Cite this repository** button
+(from [CITATION.cff](CITATION.cff)) gives APA and BibTeX, or copy this:
+
+```bibtex
+@software{swlink_hearback,
+  author  = {Cynthia-wlan9509},
+  title   = {SWLink (Hearback): a human-approved bug desk and Discord bot for game communities},
+  year    = {2026},
+  version = {0.2.0},
+  url     = {https://github.com/Cynthia-wlan9509/hearback}
+}
+```
+
+Building on it? Forks and derived tools are welcome. The MIT license asks you to keep the copyright notice;
+please also say "Based on [SWLink / Hearback](https://github.com/Cynthia-wlan9509/hearback) by Cynthia-wlan9509"
+in your README, so people can find the original.
+
 ## License
 
 MIT © 2026 Cynthia-wlan9509 and contributors
