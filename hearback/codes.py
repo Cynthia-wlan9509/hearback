@@ -1,5 +1,6 @@
 """SWLink codes: a member with a given role DMs the bot a device code and gets back what the owner's issuing command
-prints (an activation or license code bound to that device).
+prints (an activation or license code bound to that device). The bot sends the reply, then the code alone in its own
+message (a long-press copy on a phone takes the whole message).
 
 Per workspace, in hearback.toml:
 
@@ -148,7 +149,7 @@ class Codes:
 
     def handle(self, person: Any, device: str) -> tuple[str, str, list[str]]:
         """(reply, code, owner notes) for `person` asking for `device`. `code` is '' when none is given.
-        The reply carries the code; notes never do."""
+        The caller sends `code` as a message of its own after the reply; notes never carry it."""
         uid, dev = str(person.id), device.upper()
         who = "%s (id %s)" % (person.display or person.name or "?", uid)
         if self.role_id not in {str(r) for r in person.role_ids}:

@@ -317,7 +317,8 @@ one server).
 `[codes]` (hearback/codes.py) lets a member with a given role DM a device code and get back what the owner's issuing
 command prints: the command runs without a shell with `{device}` and `{note}` filled in, its last stdout line is the
 code, `.hearback/codes.json` keeps it so the same device gets the same code again, one device code never goes to two
-members, and `per_user` caps devices per member (more goes to the owner). Codes never enter events, logs or notices. A folder that fails to load, repeats one, or holds a different bot
+members, and `per_user` caps devices per member (more goes to the owner). The code goes in a DM of its own after the
+reply, so a long-press copy on a phone takes just the code. Codes never enter events, logs or notices. A folder that fails to load, repeats one, or holds a different bot
 token is skipped and shown under the picker.
 
 ## 5. Non-goals (v0.1)

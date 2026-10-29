@@ -419,8 +419,10 @@ class App:
                 live[0].supporter_bot.say(client, channel_id, live[0].codes.text("not_member"))
                 return True
             ws, p = pick
-            reply, _code, notes = ws.codes.handle(p, dev)
+            reply, code, notes = ws.codes.handle(p, dev)
             ws.supporter_bot.say(client, channel_id, reply)
+            if code:      # on its own: a long-press copy on a phone takes the whole message, and apps want just the code
+                ws.supporter_bot.say(client, channel_id, code)
             ws.supporter_bot.notify(client, notes)
         except HearbackError as e:
             (pick[0] if pick else live[0]).ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})

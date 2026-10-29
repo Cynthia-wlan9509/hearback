@@ -132,9 +132,10 @@ EN: dict[str, str] = {
         "This order number was already used in another server. One order works in one server only. "
         "If this looks wrong, please contact the server owner."),
     "supporter_note_elsewhere": "[SWLink] $who sent order $order, but it is already used in $server.",
-    "codes_ok": ("Here is the code for this device ($device):\n$code\n"
-                 "Copy all of it into the app. It works on this device only; please keep it to yourself."),
-    "codes_again": "This device ($device) already has a code. Here it is again:\n$code",
+    "codes_ok": ("Here is the code for this device ($device): it is the next message, on its own.\n"
+                 "On a phone, long-press it and copy, then paste it into the app. It works on this device only; "
+                 "please keep it to yourself."),
+    "codes_again": "This device ($device) already has a code. It is the next message again: long-press it and copy.",
     "codes_need_role": "Please finish the server's verification first, then send me your device code again.",
     "codes_not_member": "I cannot find you in the server. Please join and finish verification, then send me your device code.",
     "codes_taken": "This device code already has a code. If it is your device, please contact the server owner.",
@@ -229,8 +230,9 @@ ZH: dict[str, str] = {
     "supporter_note_left": "[SWLink] $who 在订单 $order 查完之前离开了服务器，这次核对已取消。",
     "supporter_claimed_elsewhere": "这个订单号已经在另一个服务器用过了，一个订单只能用在一个服务器。有问题请联系群主。",
     "supporter_note_elsewhere": "[SWLink] $who 发来订单 $order，但它已经在 $server 用过了。",
-    "codes_ok": "这是你这台手机的授权码（本机码 $device）：\n$code\n整串复制，回到游戏里粘贴。这个码只能这台手机用，请不要外传。",
-    "codes_again": "这台手机（本机码 $device）之前已经发过授权码，再发一次：\n$code",
+    "codes_ok": ("你这台手机（本机码 $device）的授权码在下一条消息里，单独一条。\n"
+                 "长按那条消息 → 复制，回到游戏点「粘贴授权码」→「验证并进入」。这个码只能这台手机用，请不要外传。"),
+    "codes_again": "这台手机（本机码 $device）之前已经发过授权码，下一条消息再发一次：长按它 → 复制，回游戏点「粘贴授权码」。",
     "codes_need_role": "请先完成验证，再把本机码发给我。",
     "codes_not_member": "我在群里找不到你。请先加入服务器并完成验证，再把本机码发给我。",
     "codes_taken": "这个本机码已经领过授权码了。如果是你的手机，请联系群主。",

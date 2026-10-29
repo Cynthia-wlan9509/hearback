@@ -74,11 +74,11 @@ def test_issue_then_same_device_again(tmp_path):
     r = Runner()
     c, ledger = make(tmp_path, r)
     reply, code, notes = c.handle(member(), DEV_A)
-    assert code == "MZ1.CODE-1-" + DEV_A and code in reply and DEV_A in reply
+    assert code == "MZ1.CODE-1-" + DEV_A and code not in reply and DEV_A in reply   # the code goes alone, after
     assert r.calls == [["issue", "--device", DEV_A, "--note", "discord:5 Mira"]]
     assert notes and code not in notes[0]
     reply2, code2, notes2 = c.handle(member(), DEV_A.lower())
-    assert code2 == code and code in reply2 and notes2 == [] and len(r.calls) == 1   # not issued twice
+    assert code2 == code and code not in reply2 and notes2 == [] and len(r.calls) == 1   # not issued twice
     events = ledger.read_events(20)
     assert [e["action"] for e in events] == ["code_issued"]
     assert code not in repr(events) and DEV_A not in repr(events)
@@ -155,7 +155,9 @@ def test_member_with_role_gets_the_code_by_dm(bot):
     bot.app.home.codes.s["role_id"] = role
     mira = bot.e.fake.add_member("Mira", roles=[role])
     said = dm(bot, mira["user"] if "user" in mira else mira, "here: " + DEV_A)
-    assert len(said) == 1 and "MZ1.CODE-1-" + DEV_A in said[0]
+    assert len(said) == 2 and "MZ1.CODE" not in said[0] and said[1] == "MZ1.CODE-1-" + DEV_A   # the code alone
+    again = dm(bot, mira["user"] if "user" in mira else mira, DEV_A)
+    assert len(again) == 4 and again[3] == said[1] and bot.runner.calls[1:] == []
     owner_dm = bot.e.fake.messages.get(bot.e.fake.dms.get(bot.owner["id"]), [])
     assert owner_dm and "MZ1.CODE" not in owner_dm[0]["content"]
     assert bot.app.inbox.conversations() == []                       # the chat rules never saw it
