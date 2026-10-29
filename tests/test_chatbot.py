@@ -509,3 +509,70 @@ def test_runtime_reports_state_changes(monkeypatch):
     assert wait_for(rt, "online")
     rt.stop()
     assert "online" in seen and seen[-1] == "offline" and seen.count("online") == 1
+
+
+def test_inbox_last_dm_ids_skips_guild_and_synthetic_ids(tmp_path):
+    ib = Inbox(tmp_path)
+    ib.add(Message(id="105", channel_id="dmA", author_id="u", author_name="u", content="a", ts="t"))
+    ib.add(Message(id="103", channel_id="dmA", author_id="u", author_name="u", content="b", ts="t"))
+    ib.add(Message(id="reply-9", channel_id="dmB", author_id="u", author_name="u", content="c", ts="t"))
+    ib.add(Message(id="200", channel_id="g1", author_id="u", author_name="u", content="d", ts="t", guild_id="G"))
+    assert ib.last_dm_ids() == {"dmA": "105"}
+
+
+def test_runtime_reads_back_dms_missed_while_closed(monkeypatch):
+    mod = fake_discord()
+    ns = types.SimpleNamespace
+
+    class Object:
+        def __init__(self, id):
+            self.id = id
+    mod.Object = Object
+
+    def msg(i, chan, author, text, bot=False):
+        a = ns(id=author, name="n%s" % author, display_name="n%s" % author, bot=bot)
+        return ns(id=i, channel=chan, author=a, content=text, created_at=None, guild=None, mentions=[], reference=None)
+
+    class DM:
+        def __init__(self, cid, msgs):
+            self.id, self.msgs, self.after = cid, msgs, []
+
+        async def history(self, limit, after, oldest_first):
+            self.after.append(after)
+            for m in self.msgs:
+                if not isinstance(after, Object) or m.id > after.id:
+                    yield m
+
+    known_dm = DM(11, [])
+    known_dm.msgs = [msg(5, known_dm, 7, "old"), msg(9, known_dm, 7, "missed")]
+    new_dm = DM(12, [])
+    new_dm.msgs = [msg(20, new_dm, 8, "hello")]
+    member = ns(bot=False, dm_channel=None)
+
+    async def create_dm():
+        return new_dm
+    member.create_dm = create_dm
+    other_bot = ns(bot=True)
+
+    async def fetch_members(limit):
+        for mm in (member, other_bot):
+            yield mm
+
+    orig = mod.Client.__init__
+
+    def init(self, intents):
+        orig(self, intents)
+        self.guilds[0].fetch_members = fetch_members
+        self.get_channel = lambda cid: known_dm if cid == 11 else None
+    monkeypatch.setattr(mod.Client, "__init__", init)
+    monkeypatch.setitem(sys.modules, "discord", mod)
+    got = []
+    rt = BotRuntime(lambda: "tok_FAKE_TOKEN_000111", lambda m, b: None, None,
+                    lambda msgs, b: got.append(msgs), lambda: {"11": "5"})
+    rt.start()
+    end = time.monotonic() + 3
+    while not got and time.monotonic() < end:
+        time.sleep(0.01)
+    rt.stop()
+    assert [(m.channel_id, m.content) for m in got[0]] == [("11", "missed"), ("12", "hello")]
+    assert known_dm.after[0].id == 5 and not isinstance(new_dm.after[0], Object)

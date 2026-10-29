@@ -119,7 +119,8 @@ class App:
         self.review = review.ReviewRunner(self.ledger, self.agents, self._review_llm, self._model_of)
         self.bot = Chatbot(self.rules, self.agents, self.inbox, self.ledger, self.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
-        self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state)
+        self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
+                                                 self.on_missed, lambda: self.bot.inbox.last_dm_ids())
         self.supporters_store = supporters_store or SupporterStore(cfg.data_dir)
         self.supporters = Supporters(self.supporters_store, ledger=self.ledger, clock=clock, lang=cfg.language,
                                      templates_dir=cfg.templates_dir, opener=afdian_opener)
@@ -203,6 +204,20 @@ class App:
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
             self.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
+
+    def on_missed(self, msgs: list[Message], bot_id: str) -> None:
+        """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
+        Afdian order nobody answered still goes to the supporter flow, nothing else gets a late reply."""
+        orders = 0
+        for m in msgs:
+            answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
+                           and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
+            if (not answered and not m.is_bot and m.author_id != bot_id
+                    and self.supporter_bot.handle_dm(m.author_id, m.channel_id, m.content)):
+                orders += 1
+            self.bot.inbox.add(m)
+        if msgs:
+            self.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(msgs), "orders": orders})
 
     def directory(self, force: bool = False) -> tuple[list[dict], str]:
         """Servers and their text channels: from the live gateway when online, else REST (cached 60 s)."""

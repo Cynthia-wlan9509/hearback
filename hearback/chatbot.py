@@ -31,6 +31,8 @@ TRIGGERS = ("mention", "all")
 HISTORY_LIMIT = 20
 INBOX_MEM = 200                   # messages kept in memory per conversation
 INBOX_FILE_CAP = 5000             # lines kept in inbox.jsonl
+CATCHUP_DAYS = 7                  # DMs missed while closed: how far back a conversation we hold nothing of is read
+CATCHUP_MEMBERS = 500             # members whose DMs are checked on connect (more than this: only known DMs)
 CONTENT_LIMIT = 1500
 UNTRUSTED = "UNTRUSTED DISCORD TEXT"
 DEFAULT_RULE: dict[str, Any] = {"mode": "off", "agent": AUTO_ID, "trigger": "mention", "cooldown_s": 20}
@@ -346,6 +348,16 @@ class Inbox:
             atomic_write_text(self.path, "\n".join(out) + ("\n" if out else ""))
             self._lines = len(out)
 
+    def last_dm_ids(self) -> dict[str, str]:
+        """Newest message id held per DM conversation (where reading missed DMs resumes)."""
+        with self._lock:
+            out = {}
+            for cid, q in self._by_chan.items():
+                ids = [int(m.id) for m in q if m.kind == "dm" and m.id.isdigit()]
+                if ids:
+                    out[cid] = str(max(ids))
+            return out
+
     def history(self, channel_id: str, limit: int = HISTORY_LIMIT) -> list[Message]:
         with self._lock:
             return list(self._by_chan.get(channel_id, []))[-limit:]
@@ -456,8 +468,11 @@ class BotRuntime:
     """Runs the Discord gateway connection in a background thread with its own event loop (discord.py, lazy)."""
 
     def __init__(self, token_fn: Callable[[], str], on_message: Callable[[Message, str], Any],
-                 on_state: Callable[[str, str], Any] | None = None):
+                 on_state: Callable[[str, str], Any] | None = None,
+                 on_missed: Callable[[list[Message], str], Any] | None = None,
+                 known_dms: Callable[[], Mapping[str, str]] | None = None):
         self._token_fn, self._on_message, self._on_state = token_fn, on_message, on_state
+        self._on_missed, self._known_dms = on_missed, known_dms
         self._lock = threading.Lock()
         self._state, self._reason = "offline", ""
         self._bot_id, self._bot_name = "", ""
@@ -553,6 +568,41 @@ class BotRuntime:
         with self._lock:
             self._guilds = out
 
+    async def _catch_up(self, discord: Any, client: Any) -> None:
+        """DMs that came in while SWLink was closed: the gateway never replays them, so each DM conversation's
+        history after the newest message held is read (members' DMs too, when the bot may list members)."""
+        import asyncio
+        bot_id = self.status()["bot_id"]
+        known = dict(self._known_dms() if self._known_dms else {})
+        chans: dict[str, Any] = {}
+        for cid in known:
+            try:
+                chans[cid] = client.get_channel(int(cid)) or await client.fetch_channel(int(cid))
+            except Exception:
+                continue
+        for g in list(getattr(client, "guilds", []) or []):
+            try:
+                async for mem in g.fetch_members(limit=CATCHUP_MEMBERS):
+                    if getattr(mem, "bot", False):
+                        continue
+                    dm = getattr(mem, "dm_channel", None) or await mem.create_dm()   # opens nothing the user sees
+                    chans.setdefault(str(dm.id), dm)
+            except Exception:       # listing members needs the Server Members intent; known DMs are still read
+                continue
+        since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=CATCHUP_DAYS)
+        missed: list[Message] = []
+        for cid, ch in chans.items():
+            after = discord.Object(id=int(known[cid])) if cid in known else since
+            try:
+                async for m in ch.history(limit=100, after=after, oldest_first=True):
+                    missed.append(message_from_discord(m, bot_id))
+            except Exception as e:
+                self._log_error(e)
+        try:
+            await asyncio.to_thread(self._on_missed, missed, bot_id)
+        except Exception as e:
+            self._log_error(e)
+
     def _run(self, discord: Any, token: str) -> None:
         import asyncio
         loop = asyncio.new_event_loop()
@@ -569,6 +619,8 @@ class BotRuntime:
                 rt._bot_name = str(getattr(client.user, "name", ""))
             rt._snapshot(client)
             rt._set("online")
+            if rt._on_missed is not None:
+                loop.create_task(rt._catch_up(discord, client))
 
         def _guild_changed(*_a: Any) -> None:
             rt._snapshot(client)

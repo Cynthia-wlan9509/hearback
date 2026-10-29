@@ -731,3 +731,18 @@ def test_the_page_is_in_the_menu_after_bot_messages_and_wired_to_the_api():
     assert "amounts=1" in js and "s.supporters" in js
     assert "innerHTML" not in js and "alert(" not in js
     assert 'type: "password"' in js and "tok.value = \"\"" in js                  # the token field is write-only and cleared
+
+
+def test_missed_dms_are_kept_and_only_an_unanswered_order_is_claimed_late(sup):
+    sup.go_live()
+    bot = sup.fake.bot["id"]
+    late, done = sup.order(), sup.order()
+    ch_m, ch_j = sup.fake._open_dm(sup.mira["id"])["id"], sup.fake._open_dm(sup.jon["id"])["id"]
+    msgs = [Message(id="101", channel_id=ch_m, author_id=sup.mira["id"], author_name="Mira", content=late),
+            Message(id="102", channel_id=ch_j, author_id=sup.jon["id"], author_name="Jon", content=done),
+            Message(id="103", channel_id=ch_j, author_id=bot, author_name="bot", content="got it", is_bot=True)]
+    sup.app.on_missed(msgs, bot)
+    assert list(sup.store.load()["claims"]) == [late]
+    assert {c["id"] for c in sup.app.inbox.conversations()} == {ch_m, ch_j}
+    ev = [json.loads(l) for l in (sup.app.cfg.data_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {"messages": 3, "orders": 1} in [e["detail"] for e in ev if e["action"] == "dm_catchup"]
