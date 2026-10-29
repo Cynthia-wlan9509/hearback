@@ -133,6 +133,24 @@ API Token 填进去（Token 只放系统钥匙串或环境变量 `HEARBACK_AFDIA
 - Codex 当修复 agent：认领一个 bug 簇、在游戏仓库里修、把修复说明和版本号写回台账 → 发版通知
 - 导出到 GitHub Issues / Linear
 
+## 引用与署名
+
+如果 SWLink / Hearback 帮到了你的项目、论文或分享，请引用它。仓库页右侧的 **Cite this repository**
+（来自 [CITATION.cff](CITATION.cff)）可以直接复制 APA 和 BibTeX，也可以用下面这段：
+
+```bibtex
+@software{swlink_hearback,
+  author  = {Cynthia-wlan9509},
+  title   = {SWLink (Hearback): a human-approved bug desk and Discord bot for game communities},
+  year    = {2026},
+  version = {0.2.0},
+  url     = {https://github.com/Cynthia-wlan9509/hearback}
+}
+```
+
+欢迎在它上面改、做延伸。MIT 许可要求保留版权声明；也请在你的 README 里写一句
+「基于 Cynthia-wlan9509 的 [SWLink / Hearback](https://github.com/Cynthia-wlan9509/hearback)」，方便别人找到原项目。
+
 ## 许可
 
 MIT © 2026 Cynthia-wlan9509 and contributors

@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use SWLink / Hearback, or build on it, please cite it as below and keep a link back to this repository."
+title: "SWLink (Hearback): a human-approved bug desk and Discord bot for game communities"
+abstract: "SWLink is a local web console and Discord bot for small game communities. Hearback, the bug desk underneath, keeps an incremental ledger of forum bug reports, lets AI agents triage and draft replies, puts every outgoing reply and tag in an approval queue, and tells each reporter when the fix ships. MCP server for Claude Code, Codex and the Agents SDK."
+type: software
+authors:
+  - alias: Cynthia-wlan9509
+version: 0.2.0
+date-released: 2026-10-28
+repository-code: "https://github.com/Cynthia-wlan9509/hearback"
+url: "https://github.com/Cynthia-wlan9509/hearback"
+license: MIT
+keywords:
+  - discord
+  - bug-tracker
+  - game-community
+  - human-in-the-loop
+  - ai-agents
+  - mcp
