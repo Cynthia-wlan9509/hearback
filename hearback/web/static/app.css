@@ -28,6 +28,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .space { margin: 0 0 6px; }
 .space .nav-group { margin-top: 0; }
 .space-select { width: 100%; }
+.space-pill { font-weight: 600; }
 .space-broken { padding: 4px 10px 0; color: var(--muted); }
 .side-foot { margin-top: auto; padding: 14px 10px 0; color: var(--muted); font-size: 12px; }
 .main { flex: 1; min-width: 0; padding: 0 32px 40px; }

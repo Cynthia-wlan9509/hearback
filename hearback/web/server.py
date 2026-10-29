@@ -148,6 +148,7 @@ class App:
         self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
                                                  self.on_missed, lambda: self.bot.inbox.last_dm_ids())
         self._members_cache: tuple[float, list[dict]] | None = None
+        self._member_ids_cache: dict[str, tuple[float, set[str] | None]] = {}
         self._bot_id = self._bot_name = ""
         self.routes = self._build_routes()
 
@@ -195,6 +196,44 @@ class App:
         except HearbackError:
             return False
         return hmac.compare_digest(theirs.encode(), mine.encode())
+
+    # ---- which places the open workspace shows (chat, channel rules, bot messages); one workspace shows all
+    def _here(self, guild_id: str) -> bool:
+        """A server's channels show on the workspace for that server; home also shows servers no workspace claims."""
+        if len(self.spaces) < 2:
+            return True
+        if self.cur.cfg.guild_id and str(guild_id) == self.cur.cfg.guild_id:
+            return True
+        return self.cur is self.home and str(guild_id) not in {ws.cfg.guild_id for ws in self.spaces}
+
+    def _member_ids(self, guild: str) -> set[str] | None:
+        """User ids in a server (REST, cached briefly); None when Discord will not list them."""
+        now = self.clock()
+        hit = self._member_ids_cache.get(guild)
+        if hit and now - hit[0] < MEMBER_CACHE_S:
+            return hit[1]
+        ids: set[str] | None
+        try:
+            raw = self.client().request("GET", "/guilds/%s/members" % guild, {"limit": MEMBER_LIST_LIMIT})
+            ids = {str((m.get("user") or {}).get("id", "")) for m in raw}
+        except (ApiError, HearbackError):
+            ids = None
+        self._member_ids_cache[guild] = (now, ids)
+        return ids
+
+    def _dm_here(self, user_id: str) -> bool:
+        """A DM shows on the workspace of each server the person is in; someone in none of them (or when Discord
+        will not list members) shows on home."""
+        if len(self.spaces) < 2:
+            return True
+
+        def member_of(ws: Workspace) -> bool:
+            ids = self._member_ids(ws.cfg.guild_id) if ws.cfg.guild_id and user_id else None
+            return bool(ids) and user_id in ids
+
+        if member_of(self.cur):
+            return True
+        return self.cur is self.home and not any(member_of(ws) for ws in self.spaces if ws is not self.home)
 
     def start_background(self) -> None:
         """Supporter retry loops of every workspace (REST only, whichever workspace the page has open)."""
@@ -456,6 +495,8 @@ class App:
         live = self.runtime.online
         items: dict[str, dict] = {}
         for g in guilds:
+            if not self._here(g["id"]):
+                continue
             for c in g["channels"]:
                 items[c["id"]] = {"id": c["id"], "kind": "guild", "guild_id": g["id"], "guild_name": g["name"],
                                   "channel_name": c["name"], "preview": "", "last_ts": ""}
@@ -463,6 +504,8 @@ class App:
                     items[c["id"]].update(readable=c.get("readable") is not False,
                                           can_send=c.get("can_send") is not False)
         for c in self.inbox.conversations():
+            if not (self._dm_here(c.get("user_id", "")) if c["kind"] == "dm" else self._here(c["guild_id"])):
+                continue
             items.setdefault(c["id"], c).update({"preview": c["preview"], "last_ts": c["last_ts"]})
         for c in items.values():
             rule = self.rules.rule_for(c["id"], c["kind"] == "dm")
@@ -564,7 +607,7 @@ class App:
 
     def api_guilds(self, q: Request) -> tuple[int, Any]:
         guilds, reason = self.directory(force=q.query.get("refresh") == "1")
-        return 200, {"items": guilds, "reason": reason}
+        return 200, {"items": [g for g in guilds if self._here(g["id"])], "reason": reason}
 
     # ---- queue
     def _proposal(self, p: Any) -> dict:
@@ -804,6 +847,8 @@ class App:
         try:
             c = self.client()
             for g in guilds:
+                if not self._here(g["id"]):
+                    continue
                 names = {str(ch["id"]): ch.get("name", "") for ch in c.request("GET", "/guilds/%s/channels" % g["id"])}
                 for th in c.request("GET", "/guilds/%s/threads/active" % g["id"]).get("threads", []):
                     tid, parent = str(th.get("id")), str(th.get("parent_id") or "")
@@ -816,7 +861,7 @@ class App:
         except HearbackError as e:
             reason = reason or scrub(str(e))[:200]
         dms = [{"id": c["id"], "name": c["channel_name"], "last": c["last_ts"]}
-               for c in self.inbox.conversations() if not c["guild_id"]]
+               for c in self.inbox.conversations() if not c["guild_id"] and self._dm_here(c.get("user_id", ""))]
         return 200, {"threads": threads, "dms": dms, "reason": reason}
 
     def api_botmsgs(self, q: Request) -> tuple[int, Any]:
@@ -1059,6 +1104,7 @@ class App:
         if self.spaces[i] is not self.cur:
             self.cur = self.spaces[i]
             self._members_cache = None       # member lists belong to one server
+            self._member_ids_cache.clear()
             self.ledger.event(ACTOR, "workspace_open", None, {"folder": self.cfg.root.name})
         return self.api_workspaces(q)
 

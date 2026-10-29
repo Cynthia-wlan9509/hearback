@@ -144,3 +144,53 @@ def test_single_workspace_unchanged(tmp_path, monkeypatch):
                   llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
     assert app.spaces == [app.home] and app.cur is app.home and app.broken == []
     assert isinstance(app.ledger, Ledger) and app.cfg is e.cfg
+
+
+# ---------------------------------------------------------------- chat, rules and bot messages split by server
+class TwoGuildRuntime(StubRuntime):
+    def __init__(self, home_guild):
+        super().__init__()
+        self.state = "online"
+        self.home_guild = home_guild
+
+    def guilds(self):
+        return [{"id": self.home_guild, "name": "Home", "channels": [{"id": "11", "name": "home-chat", "category": ""}]},
+                {"id": OTHER_GUILD, "name": "Second", "channels": [{"id": "21", "name": "second-chat", "category": ""}]},
+                {"id": "5555", "name": "Loose", "channels": [{"id": "31", "name": "loose-chat", "category": ""}]}]
+
+
+def test_chat_and_servers_follow_the_open_workspace(tmp_path, monkeypatch):
+    from hearback.chatbot import Message
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path / "home")
+    other = load_config(write_ws(tmp_path / "second") / "hearback.toml")
+    app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=TwoGuildRuntime(e.cfg.guild_id),
+                  secret=SECRET, workspaces=[other],
+                  llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
+    members = {e.cfg.guild_id: {"u-home", "u-both"}, OTHER_GUILD: {"u-second", "u-both"}}
+    app._member_ids = lambda g: members.get(g)
+    for uid in ("u-home", "u-second", "u-both", "u-none"):
+        app.inbox.add(Message(id="m-" + uid, channel_id="dm-" + uid, author_id=uid, author_name=uid, content="hi"))
+
+    def chat():
+        return {c["id"] for c in app.api_conversations(None)[1]["items"]}
+
+    def servers():
+        return [g["name"] for g in app.api_guilds(web.Request("GET", "/api/guilds", {}, {}, ()))[1]["items"]]
+
+    assert chat() == {"11", "31", "dm-u-home", "dm-u-both", "dm-u-none"}      # home: its server, unclaimed ones
+    assert servers() == ["Home", "Loose"]
+    app.cur = app.spaces[1]
+    assert chat() == {"21", "dm-u-second", "dm-u-both"}
+    assert servers() == ["Second"]
+    members[OTHER_GUILD] = None                      # Discord will not list members: those DMs stay on home
+    app.cur = app.home
+    assert {"dm-u-second", "dm-u-both"} <= chat()
+
+
+def test_one_workspace_shows_everything(tmp_path, monkeypatch):
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path)
+    app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=TwoGuildRuntime(e.cfg.guild_id),
+                  secret=SECRET, llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
+    assert {c["id"] for c in app.api_conversations(None)[1]["items"]} == {"11", "21", "31"}

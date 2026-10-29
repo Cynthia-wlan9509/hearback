@@ -227,7 +227,9 @@ function renderTop() {
   const b = (STATUS && STATUS.bot) || { state: "offline", reason: "" };
   const running = b.state === "online" || b.state === "connecting";
   top.appendChild(h("div", null, h("h1", null, t("nav." + PAGE)), h("div", { class: "sub" }, t("sub." + PAGE))));
+  const here = SPACES && SPACES.items.length > 1 ? SPACES.items.find((w) => w.current) : null;
   top.appendChild(h("div", { class: "top-right" },
+    here ? h("span", { class: "pill space-pill", title: t("ws.label") }, here.name) : null,
     h("span", { class: "pill " + b.state, title: botHint(b) }, h("span", { class: "dot" }), t("bot." + b.state)),
     h("button", { class: "btn small " + (running ? "" : "primary"), onclick: toggleBot }, running ? t("bot.stop") : t("bot.start")),
     h("button", { class: "help", title: t("howto.show"), "aria-label": t("howto.show"), onclick: toggleHowto }, "?"),

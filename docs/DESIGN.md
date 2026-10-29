@@ -307,7 +307,9 @@ workspaces = []               # other folders (each with its own hearback.toml) 
 `[swlink] workspaces` lets one SWLink serve several servers with one bot connection (two SWLinks on one token would
 both answer every DM). The folder SWLink starts in is the home workspace: its token runs the gateway, and the bot's
 own events, drafts, chat rules, inbox, models and agents live there. The page's server picker switches the forum,
-approvals, supporters, logs and forum ids to another folder. A DM with an order number goes to the first workspace
+approvals, supporters, logs and forum ids to another folder, and narrows chat, channel rules and bot messages to that
+server's channels (home also lists servers no workspace claims). A DM shows under each server the person is in; when
+Discord will not list members, or the person is in none of them, it shows under home. A DM with an order number goes to the first workspace
 (home first) whose supporter DM handling is on. A folder that fails to load, repeats one, or holds a different bot
 token is skipped and shown under the picker.
 

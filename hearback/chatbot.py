@@ -380,7 +380,8 @@ class Inbox:
                     name = last.channel_name or (first or last).author_name
                 out.append({"id": cid, "kind": last.kind, "guild_id": last.guild_id or "",
                             "guild_name": last.guild_name, "channel_name": name,
-                            "preview": short(last.content, 80), "last_ts": last.ts})
+                            "preview": short(last.content, 80), "last_ts": last.ts,
+                            "user_id": first.author_id if last.kind == "dm" and first is not None else ""})
             return sorted(out, key=lambda c: c["last_ts"], reverse=True)
 
 
