@@ -244,3 +244,36 @@ def test_dms_the_bot_answers_itself_still_show_on_the_persons_server(tmp_path, m
     app.cur = app.spaces[1]
     assert dms() == {dm1: "Mira", dm2: "Noor"}
     assert {d["id"] for d in app.api_places(web.Request("GET", "/api/places", {}, {}, ()))[1]["dms"]} == {dm1, dm2}
+
+
+def test_device_codes_that_belong_to_another_server_are_left_alone(tmp_path, monkeypatch):
+    """One bot in two servers, only the second issues codes: a code from someone outside it, or without its role
+    while in the home server, is the home server's own program's business. One server alone still answers."""
+    from hearback.supporters import Person
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path / "home")
+    other = load_config(write_ws(tmp_path / "second", extra='[codes]\nenabled = true\nrole_id = "42"\n'
+                                                            'command = ["x"]\n') / "hearback.toml")
+    app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=StubRuntime(), secret=SECRET,
+                  workspaces=[other], llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
+    second = app.spaces[1]
+    asked = []
+    second.codes.handle = lambda p, dev: asked.append(dev) or ("reply", "", [])
+    where = {}                                               # workspace -> roles, for the servers the person is in
+    app._member_in = lambda ws, uid: Person(id=uid, role_ids=where[ws]) if ws in where else None
+    user = e.fake.add_user("Mira")
+    ch = e.fake._open_dm(user["id"])["id"]
+    code = "AAAA-BBBB-CCCC-DDDD"
+    assert app._codes_dm(user["id"], ch, code) is False and asked == []               # in neither
+    where[app.home] = set()
+    assert app._codes_dm(user["id"], ch, code) is False and asked == []               # home only
+    where[second] = set()
+    assert app._codes_dm(user["id"], ch, code) is False and asked == []               # both, no role here
+    del where[app.home]
+    assert app._codes_dm(user["id"], ch, code) is True and asked == [code]            # second only: told to get the role
+    where[app.home], where[second] = set(), {"42"}
+    assert app._codes_dm(user["id"], ch, code) is True and asked == [code, code]      # has the role
+    app.spaces = [second]                                    # one server: a stranger is still told to join
+    where.clear()
+    assert app._codes_dm(user["id"], ch, code) is True and asked == [code, code]
+    assert e.fake.messages[ch][-1]["content"] == second.codes.text("not_member")

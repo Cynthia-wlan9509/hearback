@@ -421,7 +421,8 @@ class App:
 
     def _codes_dm(self, author_id: str, channel_id: str, content: str) -> bool:
         """A DM holding a device code, for a workspace with [codes] on: the member with its role gets the code from
-        the owner's command. With several such workspaces, the first whose server the person is in."""
+        the owner's command. With several such workspaces, the first whose server the person is in. With several
+        servers, codes from people without the role who belong elsewhere are left alone (False)."""
         live = [ws for ws in self.spaces if ws.codes.enabled]
         dev = next((d for d in (ws.codes.find(content) for ws in live) if d), "")
         if not dev:
@@ -434,6 +435,11 @@ class App:
                 pick = (ws, p)
                 if ws.codes.role_id in {str(r) for r in p.role_ids}:
                     break
+        if len(self.spaces) > 1 and not (pick and pick[0].codes.role_id in {str(r) for r in pick[1].role_ids}):
+            # several servers on one bot: a device code from someone outside the codes servers, or without the role
+            # there while in another server, is likely for that other server's own program; say nothing
+            if pick is None or any(self._member_in(ws, uid) is not None for ws in self.spaces if not ws.codes.enabled):
+                return False
         try:
             client = self._client_factory()
             if pick is None:
