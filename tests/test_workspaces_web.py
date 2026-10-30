@@ -215,3 +215,32 @@ def test_one_workspace_shows_everything(tmp_path, monkeypatch):
     app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=TwoGuildRuntime(e.cfg.guild_id),
                   secret=SECRET, llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
     assert {c["id"] for c in app.api_conversations(None)[1]["items"]} == {"11", "21", "31"}
+
+
+def test_dms_the_bot_answers_itself_still_show_on_the_persons_server(tmp_path, monkeypatch):
+    """An order number or device code is answered by the bot without the chat rules; the person's DM is still kept,
+    and a DM holding only the bot's words is placed by who Discord says the other end is."""
+    from hearback.chatbot import Message
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path / "home")
+    other = load_config(write_ws(tmp_path / "second") / "hearback.toml")
+    app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=TwoGuildRuntime(e.cfg.guild_id),
+                  secret=SECRET, workspaces=[other],
+                  llm_store=LLMStore(e.cfg.data_dir, environ={}, keyring_mod=FakeKeyring()))
+    bot = e.fake.bot["id"]
+    mira, noor = e.fake.add_user("Mira"), e.fake.add_user("Noor")
+    members = {e.cfg.guild_id: set(), OTHER_GUILD: {mira["id"], noor["id"]}}
+    app._member_ids = lambda g: members.get(g)
+    app._codes_dm = lambda a, c, t: True                     # the bot answered it itself
+    dm1, dm2 = e.fake._open_dm(mira["id"])["id"], e.fake._open_dm(noor["id"])["id"]
+    app.on_message(Message(id="1", channel_id=dm1, author_id=mira["id"], author_name="Mira", content="AAAA-BBBB"), bot)
+    assert app.inbox.has(dm1, "1")
+    app.inbox.add(Message(id="2", channel_id=dm2, author_id=bot, author_name="Bot", content="your code", is_bot=True))
+
+    def dms():
+        return {c["id"]: c["channel_name"] for c in app.api_conversations(None)[1]["items"] if c["kind"] == "dm"}
+
+    assert dms() == {}                                       # home: both people are in the second server only
+    app.cur = app.spaces[1]
+    assert dms() == {dm1: "Mira", dm2: "Noor"}
+    assert {d["id"] for d in app.api_places(web.Request("GET", "/api/places", {}, {}, ()))[1]["dms"]} == {dm1, dm2}

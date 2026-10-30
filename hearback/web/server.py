@@ -154,6 +154,7 @@ class App:
                                                  self.on_missed, lambda: self.bot.inbox.last_dm_ids())
         self._members_cache: tuple[float, list[dict]] | None = None
         self._member_ids_cache: dict[str, tuple[float, set[str] | None]] = {}
+        self._dm_peers: dict[str, tuple[float, dict | None]] = {}     # DM channel id -> the person at the other end
         self._bot_id = self._bot_name = ""
         self.routes = self._build_routes()
 
@@ -240,6 +241,25 @@ class App:
             return True
         return self.cur is self.home and not any(member_of(ws) for ws in self.spaces if ws is not self.home)
 
+    def _dm_peer(self, c: dict) -> dict:
+        """A DM where only the bot has spoken holds no message of the person's; Discord still knows who the other
+        end is (the channel's recipient). Filled into the conversation's user id and name; cached, a failure briefly."""
+        if c["kind"] != "dm" or c.get("user_id"):
+            return c
+        now = self.clock()
+        hit = self._dm_peers.get(c["id"])
+        if hit is None or (hit[1] is None and now - hit[0] >= MEMBER_CACHE_S):
+            try:
+                ch = self.client().request("GET", "/channels/%s" % c["id"])
+                u = (ch.get("recipients") or [{}])[0]
+                hit = (now, {"user_id": str(u["id"]), "channel_name": u.get("global_name") or u.get("username") or ""})
+            except (ApiError, HearbackError, KeyError, TypeError, AttributeError):
+                hit = (now, None)
+            self._dm_peers[c["id"]] = hit
+        if hit[1]:
+            c.update({k: v for k, v in hit[1].items() if v})
+        return c
+
     def start_background(self) -> None:
         """Supporter retry loops of every workspace (REST only, whichever workspace the page has open)."""
         for ws in self.spaces:
@@ -320,6 +340,7 @@ class App:
         if (msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id
                 and (self._supporter_dm(msg.author_id, msg.channel_id, msg.content)
                      or self._codes_dm(msg.author_id, msg.channel_id, msg.content))):
+            self.inbox.add(msg)      # kept like any DM: the chat shows it, and it names who the conversation is with
             return
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
@@ -593,7 +614,7 @@ class App:
                 if live:       # what the bot member may do there; only the gateway knows (None = unknown = fine)
                     items[c["id"]].update(readable=c.get("readable") is not False,
                                           can_send=c.get("can_send") is not False)
-        for c in self.inbox.conversations():
+        for c in map(self._dm_peer, self.inbox.conversations()):
             if not (self._dm_here(c.get("user_id", "")) if c["kind"] == "dm" else self._here(c["guild_id"])):
                 continue
             items.setdefault(c["id"], c).update({"preview": c["preview"], "last_ts": c["last_ts"]})
@@ -951,7 +972,8 @@ class App:
         except HearbackError as e:
             reason = reason or scrub(str(e))[:200]
         dms = [{"id": c["id"], "name": c["channel_name"], "last": c["last_ts"]}
-               for c in self.inbox.conversations() if not c["guild_id"] and self._dm_here(c.get("user_id", ""))]
+               for c in map(self._dm_peer, self.inbox.conversations())
+               if not c["guild_id"] and self._dm_here(c.get("user_id", ""))]
         return 200, {"threads": threads, "dms": dms, "reason": reason}
 
     def api_botmsgs(self, q: Request) -> tuple[int, Any]:

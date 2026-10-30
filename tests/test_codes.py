@@ -160,7 +160,8 @@ def test_member_with_role_gets_the_code_by_dm(bot):
     assert len(again) == 4 and again[3] == said[1] and bot.runner.calls[1:] == []
     owner_dm = bot.e.fake.messages.get(bot.e.fake.dms.get(bot.owner["id"]), [])
     assert owner_dm and "MZ1.CODE" not in owner_dm[0]["content"]
-    assert bot.app.inbox.conversations() == []                       # the chat rules never saw it
+    assert bot.app.queue.list("pending") == []                       # the chat rules never saw it
+    assert [c["user_id"] for c in bot.app.inbox.conversations()] == [mira["user"]["id"] if "user" in mira else mira["id"]]
 
 
 def test_without_role_or_not_in_server(bot):

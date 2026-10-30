@@ -405,7 +405,8 @@ def test_a_dm_with_an_order_number_gets_the_template_reply_the_role_and_the_owne
     note = sup.said(sup.owner)
     assert len(note) == 1 and mask(no) in note[0] and "66.00" not in note[0] and no not in note[0]
     assert sup.store.load()["claims"][no]["user_id"] == sup.mira["id"]
-    assert sup.app.inbox.conversations() == [] and sup.app.queue.list("pending") == []      # the AI rules never saw it
+    assert sup.app.queue.list("pending") == []                                       # the AI rules never saw it
+    assert [c["user_id"] for c in sup.app.inbox.conversations()] == [sup.mira["id"]]    # but the chat shows it
     ev = [e for e in sup.events() if e["actor"] == "bot:swlink"]
     assert {e["action"] for e in ev} == {"supporter_claim", "supporter_grant"}
     assert all(no not in json.dumps(e) and TOKEN not in json.dumps(e) for e in sup.events())
