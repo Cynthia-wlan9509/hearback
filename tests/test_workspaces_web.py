@@ -277,3 +277,40 @@ def test_device_codes_that_belong_to_another_server_are_left_alone(tmp_path, mon
     where.clear()
     assert app._codes_dm(user["id"], ch, code) is True and asked == [code, code]
     assert e.fake.messages[ch][-1]["content"] == second.codes.text("not_member")
+
+
+def test_an_order_one_server_would_turn_away_goes_to_one_that_takes_it(two):
+    """Both servers lack the person's role; home's minimum is above the order, the second takes any amount."""
+    from hearback.supporters import Outcome, Person
+    app = two.srv.app
+    home, second = app.home, app.spaces[1]
+    home.supporters_store.update({"role_id": "41"})
+    second.supporters_store.update({"role_id": "42"})
+    calls = []
+    for ws, name, key in ((home, "home", "below_min"), (second, "second", "ok")):
+        ws.supporter_bot.dm_on = lambda: True
+        ws.supporter_bot.handle_dm = (lambda n: lambda a, c, t: calls.append(n) or True)(name)
+        ws.supporters.handle_order = (lambda k: lambda p, no, now=None, **kw: Outcome(k))(key)
+    app._member_in = lambda ws, uid: Person(id=uid)
+    order = "202610300000000000000003"
+    assert app._supporter_dm("7", "8", order) and calls == ["second"]
+    second.supporters.handle_order = lambda p, no, now=None, **kw: Outcome("not_found")   # nobody takes it: as before
+    calls.clear()
+    assert app._supporter_dm("7", "8", order) and calls == ["home"]
+
+
+def test_a_second_swlink_on_the_same_folder_opens_the_running_one(tmp_path, monkeypatch):
+    """A second start would bind another port, connect the same bot and answer every DM twice."""
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path)
+    first = web.hold_folder(e.cfg)
+    assert first is not None
+    (e.cfg.data_dir / "swlink.url").write_text("http://127.0.0.1:1/#k=x\n", encoding="utf-8")
+    opened = []
+    monkeypatch.setattr(web.webbrowser, "open", opened.append)
+    monkeypatch.setattr(web, "create_server", lambda *a, **k: pytest.fail("must not start a second one"))
+    assert web.run(e.cfg) == 0 and opened == ["http://127.0.0.1:1/#k=x"]
+    first.close()
+    again = web.hold_folder(e.cfg)
+    assert again is not None
+    again.close()

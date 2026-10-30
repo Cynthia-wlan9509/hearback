@@ -348,11 +348,15 @@ class App:
 
     def on_missed(self, msgs: list[Message], bot_id: str) -> None:
         """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
-        Afdian order nobody answered still goes to the supporter flow, nothing else gets a late reply."""
+        Afdian order nobody answered still goes to the supporter flow, nothing else gets a late reply. Answered means
+        a later bot message SWLink itself saw: what the bot said while SWLink was closed came from another program
+        on the same token (a welcome, another server's flow) and answers nothing here."""
         orders = 0
-        fresh = [m for m in msgs if not self.inbox.has(m.channel_id, m.id)]
+        held = {(o.channel_id, o.id) for o in msgs if self.inbox.has(o.channel_id, o.id)}
+        fresh = [m for m in msgs if (m.channel_id, m.id) not in held]
         for m in fresh:
             answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
+                           and (o.channel_id, o.id) in held
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
             if (not answered and not m.is_bot and m.author_id != bot_id
                     and (self._supporter_dm(m.author_id, m.channel_id, m.content)
@@ -364,13 +368,14 @@ class App:
 
     def _supporter_dm(self, author_id: str, channel_id: str, content: str) -> bool:
         """An order-number DM goes to one workspace whose supporter DM handling is on: with several, the first whose
-        server the person is in and still lacks that workspace's role, else the first they are in, else the first.
-        An order already claimed in another workspace is refused (one order, one server)."""
+        server the person is in and whose own rules would take the order (still lacking that role first), else the
+        first they are in, else the first. An order already claimed in another workspace is refused (one order, one
+        server)."""
         live = [ws for ws in self.spaces if ws.supporter_bot.dm_on()]
         nums = extract_order_numbers(content)
         if not live or not nums:
             return False
-        ws = live[0] if len(live) == 1 else self._order_space(live, str(author_id))
+        ws = live[0] if len(live) == 1 else self._order_space(live, str(author_id), nums[0])
         for other in self.spaces:
             if other is ws:
                 continue
@@ -391,8 +396,10 @@ class App:
         except HearbackError:
             return None
 
-    def _order_space(self, live: list[Workspace], uid: str) -> Workspace:
-        found = []
+    def _order_space(self, live: list[Workspace], uid: str, no: str) -> Workspace:
+        """Servers the person is in, those still lacking the role first; of these, the first whose dry run takes the
+        order (amount, required roles: one server's minimum must not turn away an order another would take)."""
+        need, have = [], []
         for ws in live:
             p = self._member_in(ws, uid)
             if p is None:
@@ -401,10 +408,16 @@ class App:
                 role = str(ws.supporters_store.load()["role_id"])
             except SupporterError:
                 role = ""
-            if role and role not in {str(r) for r in p.role_ids}:
-                return ws
-            found.append(ws)
-        return found[0] if found else live[0]
+            (need if role and role not in {str(r) for r in p.role_ids} else have).append((ws, p))
+        ranked = need + have
+        if len(ranked) > 1:
+            for ws, p in ranked:
+                try:
+                    if ws.supporters.handle_order(p, no, dry_run=True).reply_key in ("ok", "ok_again"):
+                        return ws
+                except HearbackError:
+                    continue
+        return ranked[0][0] if ranked else live[0]
 
     def _claimed_elsewhere(self, ws: Workspace, other: Workspace, uid: str, channel_id: str, no: str) -> bool:
         sup = ws.supporters
@@ -1428,8 +1441,45 @@ def serve(srv: _Server, cfg: Config, open_browser: bool = True, url_extra: str =
     return 0
 
 
+def hold_folder(cfg: Config) -> Any | None:
+    """One SWLink per folder: an exclusive lock on `<data>/swlink.lock`, kept while serving. None when another
+    SWLink holds it (a second one would bind another port, connect the same bot and answer every DM again)."""
+    ensure_data_dir(cfg.data_dir)
+    fh = open(cfg.data_dir / "swlink.lock", "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
 def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
-    return serve(create_server(cfg, port), cfg, open_browser)
+    lock = hold_folder(cfg)
+    url_file = cfg.data_dir / "swlink.url"           # the running one's link, so a second start can open it
+    if lock is None:
+        try:
+            url = url_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            url = ""
+        print("SWLink is already running for this folder%s" % (": " + url if url else "."), flush=True)
+        if open_browser and url:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return 0
+    try:
+        srv = create_server(cfg, port)
+        atomic_write_text(url_file, "http://127.0.0.1:%d/#k=%s\n" % (srv.app.port, srv.app.secret))
+        return serve(srv, cfg, open_browser)
+    finally:
+        lock.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

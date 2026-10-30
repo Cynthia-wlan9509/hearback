@@ -742,10 +742,24 @@ def test_missed_dms_are_kept_and_only_an_unanswered_order_is_claimed_late(sup):
     msgs = [Message(id="101", channel_id=ch_m, author_id=sup.mira["id"], author_name="Mira", content=late),
             Message(id="102", channel_id=ch_j, author_id=sup.jon["id"], author_name="Jon", content=done),
             Message(id="103", channel_id=ch_j, author_id=bot, author_name="bot", content="got it", is_bot=True)]
+    sup.app.inbox.add(msgs[2])                               # SWLink saw that reply when it was sent
     sup.app.on_missed(msgs, bot)
     assert list(sup.store.load()["claims"]) == [late]
     sup.app.on_missed(msgs, bot)                             # read again on the next connect: nothing new, no repeat
     assert list(sup.store.load()["claims"]) == [late]
     assert {c["id"] for c in sup.app.inbox.conversations()} == {ch_m, ch_j}
     ev = [json.loads(l) for l in (sup.app.cfg.data_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert {"messages": 3, "orders": 1} in [e["detail"] for e in ev if e["action"] == "dm_catchup"]
+    assert {"messages": 2, "orders": 1} in [e["detail"] for e in ev if e["action"] == "dm_catchup"]
+
+
+def test_a_bot_message_sent_while_swlink_was_closed_does_not_count_as_an_answer(sup):
+    """The same bot also speaks for other programs (another server's flow, a welcome DM). Said while SWLink was
+    closed, that answers nothing here: the order is still claimed."""
+    sup.go_live()
+    bot = sup.fake.bot["id"]
+    no = sup.order()
+    ch = sup.fake._open_dm(sup.mira["id"])["id"]
+    msgs = [Message(id="201", channel_id=ch, author_id=sup.mira["id"], author_name="Mira", content=no),
+            Message(id="202", channel_id=ch, author_id=bot, author_name="bot", content="welcome!", is_bot=True)]
+    sup.app.on_missed(msgs, bot)
+    assert list(sup.store.load()["claims"]) == [no]
