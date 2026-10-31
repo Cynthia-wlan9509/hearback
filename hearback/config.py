@@ -90,6 +90,8 @@ class Config:
     swlink_autostart: bool = False   # [swlink] autostart: connect the bot when `hearback web` starts
     swlink_workspaces: list[str] = field(default_factory=list)   # [swlink] workspaces: other folders, same bot
     codes: dict = field(default_factory=dict)                       # [codes]: see hearback/codes.py
+    welcome: dict = field(default_factory=dict)                     # [welcome]: see hearback/welcome.py
+    swlink_claims_from: list[str] = field(default_factory=list)     # [swlink] claims_from: other bots' folders
 
     # ---- paths
     @property
@@ -204,8 +206,14 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     if not isinstance(spaces, list) or not all(isinstance(x, str) and x.strip() for x in spaces):
         raise HearbackError("[swlink] workspaces must be a list of folder paths")
     cfg.swlink_workspaces = [x.strip() for x in spaces]
+    peers = (raw.get("swlink") or {}).get("claims_from", [])
+    if not isinstance(peers, list) or not all(isinstance(x, str) and x.strip() for x in peers):
+        raise HearbackError("[swlink] claims_from must be a list of folder paths")
+    cfg.swlink_claims_from = [x.strip() for x in peers]
     from hearback.codes import parse_codes
     cfg.codes = parse_codes(raw.get("codes"))
+    from hearback.welcome import parse_welcome
+    cfg.welcome = parse_welcome(raw.get("welcome"))
     return cfg
 
 

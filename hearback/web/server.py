@@ -28,7 +28,7 @@ from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
 from hearback.codes import Codes
-from hearback.config import CONFIG_NAME, Config, load_config, save_discord_ids
+from hearback.config import CONFIG_NAME, DATA_DIR, Config, load_config, save_discord_ids
 from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
 from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
@@ -38,6 +38,7 @@ from hearback.supporters import (Person, SupporterBot, SupporterError, Supporter
                                  check_order_no, clean_settings, extract_order_numbers, mask, match_remarks)
 from hearback.sync import format_delta, sync as run_sync
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
+from hearback.welcome import Welcome
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ACTOR = "human:web"
@@ -117,6 +118,7 @@ class Workspace:
                                           app._plain_bot_id)
         self.codes = Codes(cfg.codes or {}, cfg.data_dir, lang=cfg.language, templates_dir=cfg.templates_dir,
                            ledger=self.ledger, clock=app.clock, runner=app._code_runner)
+        self.welcome = Welcome(cfg.welcome or {}, cfg.root, cfg.data_dir, self.ledger)
 
 
 class App:
@@ -151,7 +153,9 @@ class App:
         self.bot = Chatbot(self.rules, self.agents, self.inbox, self.home.ledger, self.home.queue, self._llm_call,
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
-                                                 self.on_missed, lambda: self.bot.inbox.last_dm_ids())
+                                                 self.on_missed, lambda: self.bot.inbox.last_dm_ids(), self.on_join,
+                                                 lambda: any(ws.welcome.enabled for ws in self.spaces))
+        self.peers = self._load_peers(cfg)      # (folder name, supporter store) of other bots' folders
         self._members_cache: tuple[float, list[dict]] | None = None
         self._member_ids_cache: dict[str, tuple[float, set[str] | None]] = {}
         self._dm_peers: dict[str, tuple[float, dict | None]] = {}     # DM channel id -> the person at the other end
@@ -187,6 +191,18 @@ class App:
                 continue
             seen.add(c.root.resolve())
             out.append(c)
+        return out
+
+    @staticmethod
+    def _load_peers(cfg: Config) -> list[tuple[str, SupporterStore]]:
+        """`[swlink] claims_from`: folders of SWLinks that run other bots; their claimed orders are only read, so
+        one Afdian order still works in one server only."""
+        out = []
+        for entry in cfg.swlink_claims_from:
+            d = Path(entry)
+            d = (d if d.is_absolute() else cfg.root / d).resolve()
+            d = d.parent if d.name == CONFIG_NAME else d
+            out.append((d.name, SupporterStore(d / DATA_DIR)))
         return out
 
     @staticmethod
@@ -376,16 +392,24 @@ class App:
         if not live or not nums:
             return False
         ws = live[0] if len(live) == 1 else self._order_space(live, str(author_id), nums[0])
-        for other in self.spaces:
-            if other is ws:
-                continue
+        others = [(o.cfg.root.name, o.supporters_store) for o in self.spaces if o is not ws] + self.peers
+        for name, store in others:
             try:
-                used = nums[0] in other.supporters_store.load()["claims"]
+                used = nums[0] in store.load()["claims"]
             except SupporterError:
                 used = False
             if used:
-                return self._claimed_elsewhere(ws, other, str(author_id), channel_id, nums[0])
+                return self._claimed_elsewhere(ws, name, str(author_id), channel_id, nums[0])
         return ws.supporter_bot.handle_dm(author_id, channel_id, content)
+
+    def on_join(self, guild_id: str, uid: str, is_bot: bool, owner_id: str) -> None:
+        """Someone joined a server (or was found on connect): the workspace for that server sends its welcome once."""
+        for ws in self.spaces:
+            if ws.welcome.enabled and ws.cfg.guild_id and str(guild_id) == ws.cfg.guild_id:
+                def send(user: str, text: str) -> None:
+                    client = self._client_factory()
+                    ws.supporter_bot.say(client, ws.supporter_bot.dm_channel(client, user), text)
+                ws.welcome.greet(send, uid, is_bot=is_bot, owner_id=owner_id)
 
     def _member_in(self, ws: Workspace, uid: str) -> Person | None:
         guild = self._supporter_guild(ws)
@@ -420,14 +444,14 @@ class App:
         ranked = need + have
         return ranked[0][0] if ranked else live[0]
 
-    def _claimed_elsewhere(self, ws: Workspace, other: Workspace, uid: str, channel_id: str, no: str) -> bool:
+    def _claimed_elsewhere(self, ws: Workspace, other: str, uid: str, channel_id: str, no: str) -> bool:
         sup = ws.supporters
         p = self._member_in(ws, uid) or Person(id=uid)
         try:
             client = self._client_factory()
             ws.supporter_bot.say(client, channel_id, sup.text("claimed_elsewhere"))
             ws.supporter_bot.notify(client, [sup.text("note_elsewhere", who=sup.who(p), order=mask(no),
-                                                       server=other.cfg.root.name)])
+                                                       server=other)])
         except HearbackError as e:
             sup.event("bot:swlink", "supporter_error", {"error": scrub(e)[:300]})
         sup.event("bot:swlink", "supporter_elsewhere", {"order": mask(no), "user": uid})

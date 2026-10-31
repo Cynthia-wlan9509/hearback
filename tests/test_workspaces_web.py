@@ -328,3 +328,42 @@ def test_a_second_swlink_on_the_same_folder_opens_the_running_one(tmp_path, monk
     again = web.hold_folder(e.cfg)
     assert again is not None
     again.close()
+
+
+def test_a_join_gets_the_welcome_of_that_servers_workspace(two):
+    from hearback.welcome import Welcome
+    app = two.srv.app
+    second = app.spaces[1]
+    (second.cfg.root / "w.txt").write_text("hi there", encoding="utf-8")
+    second.welcome = Welcome({"enabled": True, "file": "w.txt"}, second.cfg.root, second.cfg.data_dir)
+    sent = []
+    second.supporter_bot.dm_channel = lambda client, uid: "dm-" + uid
+    second.supporter_bot.say = lambda client, ch, text: sent.append((ch, text))
+    app.on_join(OTHER_GUILD, "77", False, "1")
+    app.on_join(OTHER_GUILD, "77", False, "1")
+    app.on_join("123", "78", False, "1")                # a server no workspace welcomes for
+    assert sent == [("dm-77", "hi there")]
+
+
+def test_an_order_another_bots_swlink_claimed_is_refused(two):
+    """[swlink] claims_from: a SWLink running another bot keeps its own ledger; this one only reads it."""
+    app = two.srv.app
+    order = "202610300000000000000005"
+
+    class Peer:
+        def load(self):
+            return {"claims": {order: {"user_id": "9"}}}
+    app.peers = [("Other", Peer())]
+    app.home.supporter_bot.dm_on = lambda: True
+    app.home.supporter_bot.handle_dm = lambda a, c, t: pytest.fail("must not claim it here")
+    for ws in app.spaces[1:]:
+        ws.supporter_bot.dm_on = lambda: False
+    seen = []
+    app._claimed_elsewhere = lambda ws, name, uid, ch, no: seen.append(name) or True
+    assert app._supporter_dm("7", "8", order) and seen == ["Other"]
+
+
+def test_claims_from_reads_the_other_folders_ledger(tmp_path):
+    cfg = parse_config({"swlink": {"claims_from": ["../other"]}}, tmp_path / "home")
+    peers = web.App._load_peers(cfg)
+    assert [n for n, _ in peers] == ["other"] and peers[0][1].path == (tmp_path / "other" / ".hearback" / "supporters.json").resolve()

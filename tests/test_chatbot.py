@@ -426,7 +426,8 @@ def test_runtime_goes_online_dispatches_messages_and_stops(monkeypatch):
     rt = BotRuntime(lambda: "tok_FAKE_TOKEN_000111", lambda m, b: got.append((m, b)))
     rt.start()
     assert wait_for(rt, "online")
-    assert mod.intents == {"guilds": True, "guild_messages": True, "dm_messages": True, "message_content": True}
+    assert mod.intents == {"guilds": True, "guild_messages": True, "dm_messages": True, "message_content": True,
+                           "members": False}
     st = rt.status()
     assert st["bot_id"] == BOT and "tok_FAKE_TOKEN_000111" not in str(st)
     assert rt.guilds()[0]["name"] == "Test Guild" and rt.guilds()[0]["channels"][0]["name"] == "general"

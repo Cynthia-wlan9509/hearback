@@ -468,7 +468,8 @@ class Chatbot:
 # ---------------------------------------------------------------- gateway runtime
 
 INSTALL_HINT = "install the bot extra: pip install \"hearback-desk[bot]\""
-INTENT_HINT = "Turn on Message Content Intent in the Developer Portal (Bot page), then start again"
+INTENT_HINT = ("Turn on Message Content Intent (and Server Members Intent when [welcome] is on) in the Developer "
+               "Portal (Bot page), then start again")
 GUILD_EVENTS = ("on_guild_join", "on_guild_remove", "on_guild_channel_create", "on_guild_channel_delete",
                 "on_guild_channel_update", "on_guild_role_update", "on_member_update")      # roles: bot permissions
 
@@ -479,9 +480,12 @@ class BotRuntime:
     def __init__(self, token_fn: Callable[[], str], on_message: Callable[[Message, str], Any],
                  on_state: Callable[[str, str], Any] | None = None,
                  on_missed: Callable[[list[Message], str], Any] | None = None,
-                 known_dms: Callable[[], Mapping[str, str]] | None = None):
+                 known_dms: Callable[[], Mapping[str, str]] | None = None,
+                 on_join: Callable[[str, str, bool, str], Any] | None = None,
+                 wants_members: Callable[[], bool] = lambda: False):
         self._token_fn, self._on_message, self._on_state = token_fn, on_message, on_state
         self._on_missed, self._known_dms = on_missed, known_dms
+        self._on_join, self._wants_members = on_join, wants_members     # (guild, user, is bot, owner); [welcome]
         self._lock = threading.Lock()
         self._state, self._reason = "offline", ""
         self._bot_id, self._bot_name = "", ""
@@ -594,6 +598,9 @@ class BotRuntime:
             try:     # REST, not guild.fetch_members (that one also wants the members intent on the gateway)
                 for d in await client.http.get_members(g.id, CATCHUP_MEMBERS, None):
                     u = d.get("user") or {}
+                    if self._on_join is not None and u.get("id"):     # joined while SWLink was closed
+                        await asyncio.to_thread(self._on_join, str(g.id), str(u["id"]), bool(u.get("bot")),
+                                                str(getattr(g, "owner_id", "") or ""))
                     if u.get("bot") or not u.get("id"):
                         continue
                     dm = await client.create_dm(discord.Object(id=int(u["id"])))   # opens nothing the user sees
@@ -617,7 +624,8 @@ class BotRuntime:
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        intents = discord.Intents(guilds=True, guild_messages=True, dm_messages=True, message_content=True)
+        intents = discord.Intents(guilds=True, guild_messages=True, dm_messages=True, message_content=True,
+                                  members=bool(self._wants_members()))
         client = discord.Client(intents=intents)
         self._loop, self._client = loop, client
         rt = self
@@ -639,6 +647,17 @@ class BotRuntime:
             async def handler(*a: Any, _f: Callable[..., None] = _guild_changed) -> None:
                 _f(*a)
             client.event(_rename(handler, name))
+
+        @client.event
+        async def on_member_join(member: Any) -> None:
+            if rt._on_join is None:
+                return
+            try:
+                g = member.guild
+                await asyncio.to_thread(rt._on_join, str(g.id), str(member.id), bool(member.bot),
+                                        str(getattr(g, "owner_id", "") or ""))
+            except Exception as e:
+                rt._log_error(e)
 
         @client.event
         async def on_message(m: Any) -> None:
