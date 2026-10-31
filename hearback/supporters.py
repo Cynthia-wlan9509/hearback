@@ -395,6 +395,7 @@ class Outcome:
     grant_role_ids: list = field(default_factory=list)
     notify_texts: list = field(default_factory=list)
     order: str = ""
+    amount: str = ""         # the order's amount, on below_min (another server may still take it)
 
 
 class Supporters:
@@ -546,7 +547,8 @@ class Supporters:
                     self.store.save(cfg)
                 notes = ([self.text("note_below_min", who=who, order=masked)]
                          if self._once(("min", uid, no), now, dry_run) else [])
-                return Outcome("below_min", notify_texts=notes, order=masked)
+                return Outcome("below_min", notify_texts=notes, order=masked,
+                               amount=format(_amount_of(order).normalize(), "f"))
             plan = str(order.get("plan_id") or "")
             if not dry_run:
                 cfg["claims"][no] = {"user_id": uid, "user_name": person.name or person.display, "at": _iso_at(now),

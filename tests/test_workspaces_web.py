@@ -346,7 +346,7 @@ def test_a_join_gets_the_welcome_of_that_servers_workspace(two):
 
 
 def test_an_order_another_bots_swlink_claimed_is_refused(two):
-    """[swlink] claims_from: a SWLink running another bot keeps its own ledger; this one only reads it."""
+    """[swlink] others: a SWLink running another bot keeps its own ledger; this one only reads it."""
     app = two.srv.app
     order = "202610300000000000000005"
 
@@ -363,7 +363,58 @@ def test_an_order_another_bots_swlink_claimed_is_refused(two):
     assert app._supporter_dm("7", "8", order) and seen == ["Other"]
 
 
-def test_claims_from_reads_the_other_folders_ledger(tmp_path):
-    cfg = parse_config({"swlink": {"claims_from": ["../other"]}}, tmp_path / "home")
+def test_others_reads_the_other_folders_ledger(tmp_path):
+    cfg = parse_config({"swlink": {"others": ["../other"]}}, tmp_path / "home")
     peers = web.App._load_peers(cfg)
     assert [n for n, _ in peers] == ["other"] and peers[0][1].path == (tmp_path / "other" / ".hearback" / "supporters.json").resolve()
+
+
+def test_an_order_too_small_here_that_another_bots_server_takes_is_pointed_there(two):
+    """[swlink] others: below this server's minimum, but the other bot's server takes any amount: say where to go."""
+    from hearback.supporters import Outcome, Person
+    app = two.srv.app
+    order = "202610300000000000000006"
+
+    class Peer:
+        def load(self):
+            return {"claims": {}, "enabled": True, "min_amount": "0"}
+    app.peers = [("Other", Peer())]
+    home = app.home
+    home.supporter_bot.dm_on = lambda: True
+    home.supporter_bot.handle_dm = lambda a, c, t: pytest.fail("must not refuse it here")
+    for ws in app.spaces[1:]:
+        ws.supporter_bot.dm_on = lambda: False
+    home.supporters.handle_order = lambda p, no, now=None, **kw: Outcome("below_min", amount="5.2")
+    app._member_in = lambda ws, uid: Person(id=uid)
+    said = []
+    home.supporter_bot.say = lambda client, ch, text: said.append((ch, text))
+    assert app._supporter_dm("7", "8", order) and said and said[0][0] == "8" and "Other" in said[0][1]
+    Peer.load = lambda self: {"claims": {}, "enabled": True, "min_amount": "10"}     # too small there too: refused
+    handled = []
+    home.supporter_bot.handle_dm = lambda a, c, t: handled.append(a) or True
+    assert app._supporter_dm("7", "8", order) and handled == ["7"]
+
+
+def test_the_picker_lists_other_bots_swlinks_and_starts_or_opens_them(tmp_path, monkeypatch):
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    e = make_env(tmp_path / "home")
+    other = write_ws(tmp_path / "other")
+    e.cfg.swlink_others = [str(other)]
+    started = []
+    app = web.App(e.cfg, client_factory=lambda: e.fake.client(), runtime=StubRuntime(), secret=SECRET,
+                  workspaces=[], start_other=started.append)
+    (other / ".hearback").mkdir(exist_ok=True)
+    (other / ".hearback" / "swlink.name").write_text("Other server\n", encoding="utf-8")
+    items = app.api_workspaces(None)[1]["items"]
+    assert items[-1] == {"id": "o0", "name": "Other server", "folder": "other", "guild_id": "", "forum_id": "",
+                         "home": False, "current": False, "other": True, "running": False}
+    q = web.Request("POST", "/api/others/0/open", {}, {}, ("0",))
+    assert app.api_other_open(q)[1] == {"starting": True} and started == [other.resolve()]
+    lock = web.hold_folder(load_config(other / "hearback.toml"))       # now it runs
+    try:
+        assert web.folder_running(other)
+        (other / ".hearback" / "swlink.url").write_text("http://127.0.0.1:5/#k=x\n", encoding="utf-8")
+        assert app.api_other_open(q)[1] == {"url": "http://127.0.0.1:5/#k=x"} and len(started) == 1
+    finally:
+        lock.close()
+    assert not web.folder_running(other)

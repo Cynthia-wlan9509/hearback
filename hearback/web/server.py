@@ -35,7 +35,8 @@ from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complet
                           scrub_obj)
 from hearback.queue import Queue
 from hearback.supporters import (Person, SupporterBot, SupporterError, Supporters, SupporterStore, check_id,
-                                 check_order_no, clean_settings, extract_order_numbers, mask, match_remarks)
+                                 check_order_no, clean_settings, extract_order_numbers, mask, match_remarks,
+                                 parse_amount)
 from hearback.sync import format_delta, sync as run_sync
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
 from hearback.welcome import Welcome
@@ -132,7 +133,8 @@ class App:
                  llm_store: LLMStore | None = None, runtime: Any = None, secret: str | None = None,
                  clock: Callable[[], float] = time.time, supporters_store: SupporterStore | None = None,
                  afdian_opener: Callable[..., Any] | None = None, demo: bool = False,
-                 workspaces: Sequence[Config] | None = None, code_runner: Callable[..., Any] | None = None):
+                 workspaces: Sequence[Config] | None = None, code_runner: Callable[..., Any] | None = None,
+                 start_other: Callable[[Path], Any] | None = None):
         self.demo = demo                 # fake data: tokens and keys are never saved
         self.secret = secret or secrets.token_urlsafe(24)
         self.port = 0
@@ -155,7 +157,9 @@ class App:
         self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
                                                  self.on_missed, lambda: self.bot.inbox.last_dm_ids(), self.on_join,
                                                  lambda: any(ws.welcome.enabled for ws in self.spaces))
-        self.peers = self._load_peers(cfg)      # (folder name, supporter store) of other bots' folders
+        self.others = other_folders(cfg)        # SWLink folders of other bots: shared order claims, the server picker
+        self.peers = self._load_peers(cfg)      # (folder name, supporter store) of those folders
+        self._start_other = start_other or start_folder
         self._members_cache: tuple[float, list[dict]] | None = None
         self._member_ids_cache: dict[str, tuple[float, set[str] | None]] = {}
         self._dm_peers: dict[str, tuple[float, dict | None]] = {}     # DM channel id -> the person at the other end
@@ -195,15 +199,9 @@ class App:
 
     @staticmethod
     def _load_peers(cfg: Config) -> list[tuple[str, SupporterStore]]:
-        """`[swlink] claims_from`: folders of SWLinks that run other bots; their claimed orders are only read, so
+        """`[swlink] others`: folders of SWLinks that run other bots; their claimed orders are only read, so
         one Afdian order still works in one server only."""
-        out = []
-        for entry in cfg.swlink_claims_from:
-            d = Path(entry)
-            d = (d if d.is_absolute() else cfg.root / d).resolve()
-            d = d.parent if d.name == CONFIG_NAME else d
-            out.append((d.name, SupporterStore(d / DATA_DIR)))
-        return out
+        return [(d.name, SupporterStore(d / DATA_DIR)) for d in other_folders(cfg)]
 
     @staticmethod
     def _same_bot(home: Config, other: Config) -> bool:
@@ -400,7 +398,37 @@ class App:
                 used = False
             if used:
                 return self._claimed_elsewhere(ws, name, str(author_id), channel_id, nums[0])
+        if self.peers and self._try_other(ws, str(author_id), channel_id, nums[0]):
+            return True
         return ws.supporter_bot.handle_dm(author_id, channel_id, content)
+
+    def _try_other(self, ws: Workspace, uid: str, channel_id: str, no: str) -> bool:
+        """An order below this server's minimum that another bot's server would take ([swlink] others): point the
+        person there instead of turning them away. True when that was said."""
+        p = self._member_in(ws, uid)
+        if p is None:
+            return False
+        try:
+            out = ws.supporters.handle_order(p, no, dry_run=True)
+        except HearbackError:
+            return False
+        if out.reply_key != "below_min":
+            return False
+        for name, store in self.peers:
+            try:
+                cfg = store.load()
+                takes = bool(cfg["enabled"]) and parse_amount(out.amount) >= parse_amount(cfg["min_amount"])
+            except (SupporterError, KeyError):
+                takes = False
+            if not takes:
+                continue
+            try:
+                ws.supporter_bot.say(self._client_factory(), channel_id, ws.supporters.text("try_other", server=name))
+            except HearbackError as e:
+                ws.supporters.event("bot:swlink", "supporter_error", {"error": scrub(e)[:300]})
+            ws.supporters.event("bot:swlink", "supporter_try_other", {"order": mask(no), "user": uid, "server": name})
+            return True
+        return False
 
     def on_join(self, guild_id: str, uid: str, is_bot: bool, owner_id: str) -> None:
         """Someone joined a server (or was found on connect): the workspace for that server sends its welcome once."""
@@ -597,6 +625,7 @@ class App:
         add("GET", "/api/logs", self.api_logs)
         add("GET", "/api/workspaces", self.api_workspaces)
         add("POST", "/api/workspaces/(\\d+)/open", self.api_workspace_open)
+        add("POST", "/api/others/(\\d+)/open", self.api_other_open)
         add("GET", "/api/settings", self.api_settings)
         add("PUT", "/api/settings/token", self.api_token)
         add("PUT", "/api/settings/forum", self.api_settings_forum)
@@ -635,7 +664,7 @@ class App:
             "forum_to_review": len(review.pending_threads(self.ledger.load())) if self.cfg.forum_id else 0,
             "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
             "token_set": tok["set"], "supporters": supporters,
-            "workspaces": len(self.spaces) + len(self.broken),
+            "workspaces": len(self.spaces) + len(self.broken) + len(self.others),
             "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
 
     def api_bot_start(self, q: Request) -> tuple[int, Any]:
@@ -1251,7 +1280,48 @@ class App:
         items = [{"id": str(i), "name": names.get(ws.cfg.guild_id) or ws.cfg.root.name, "folder": ws.cfg.root.name,
                   "guild_id": ws.cfg.guild_id, "forum_id": ws.cfg.forum_id, "home": ws is self.home,
                   "current": ws is self.cur} for i, ws in enumerate(self.spaces)]
+        own = names.get(self.home.cfg.guild_id) or ""
+        if own:
+            self._tell_name(own)
+        for i, d in enumerate(self.others):
+            try:
+                name = (d / DATA_DIR / "swlink.name").read_text(encoding="utf-8").strip()
+            except OSError:
+                name = ""
+            items.append({"id": "o%d" % i, "name": name or d.name, "folder": d.name, "guild_id": "", "forum_id": "",
+                          "home": False, "current": False, "other": True, "running": folder_running(d)})
         return 200, {"items": items, "broken": list(self.broken)}
+
+    def _tell_name(self, name: str) -> None:
+        """This server's name, for the picker of SWLinks that list this folder in [swlink] others."""
+        f = self.home.cfg.data_dir / "swlink.name"
+        try:
+            if f.read_text(encoding="utf-8").strip() == name:
+                return
+        except OSError:
+            pass
+        try:
+            atomic_write_text(f, name + "\n")
+        except OSError:
+            pass
+
+    def api_other_open(self, q: Request) -> tuple[int, Any]:
+        """Another bot's SWLink: its link when it runs (the page goes there), else start it ({starting}: ask again)."""
+        i = int(q.groups[0])
+        if i >= len(self.others):
+            raise ApiError(404, "no such workspace")
+        d = self.others[i]
+        if not folder_running(d):
+            try:
+                self._start_other(d)
+            except OSError as e:
+                raise ApiError(500, "could not start SWLink in %s: %s" % (d.name, scrub(str(e))[:200])) from None
+            return 200, {"starting": True}
+        try:
+            url = (d / DATA_DIR / "swlink.url").read_text(encoding="utf-8").strip()
+        except OSError:
+            url = ""
+        return 200, {"url": url} if url.startswith("http://127.0.0.1:") else {"starting": True}
 
     def api_workspace_open(self, q: Request) -> tuple[int, Any]:
         i = int(q.groups[0])
@@ -1484,6 +1554,54 @@ def hold_folder(cfg: Config) -> Any | None:
     return fh
 
 
+def other_folders(cfg: Config) -> list[Path]:
+    """`[swlink] others`: SWLink folders that run other bots (paths relative to this config)."""
+    out = []
+    for entry in cfg.swlink_others:
+        d = Path(entry)
+        d = (d if d.is_absolute() else cfg.root / d).resolve()
+        out.append(d.parent if d.name == CONFIG_NAME else d)
+    return out
+
+
+def folder_running(folder: Path) -> bool:
+    """Whether a SWLink holds that folder's lock (see hold_folder) right now."""
+    path = folder / DATA_DIR / "swlink.lock"
+    if not path.exists():
+        return False
+    try:
+        fh = open(path, "a+")
+    except OSError:
+        return False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return True
+    finally:
+        fh.close()
+    return False
+
+
+def start_folder(folder: Path) -> None:
+    """Start SWLink for another folder in its own minimized window (closing that window stops it), no browser."""
+    kw: dict[str, Any] = {}
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7                                    # SW_SHOWMINNOACTIVE
+        kw = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": si}
+    else:
+        kw = {"start_new_session": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    subprocess.Popen([sys.executable, "-m", "hearback", "web", "--no-browser"], cwd=str(folder), **kw)
+
+
 def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int:
     lock = hold_folder(cfg)
     url_file = cfg.data_dir / "swlink.url"           # the running one's link, so a second start can open it
@@ -1500,8 +1618,15 @@ def run(cfg: Config, port: int = DEFAULT_PORT, open_browser: bool = True) -> int
                 pass
         return 0
     try:
+        url_file.unlink(missing_ok=True)             # until the new link is written, the old one must not be handed out
         srv = create_server(cfg, port)
         atomic_write_text(url_file, "http://127.0.0.1:%d/#k=%s\n" % (srv.app.port, srv.app.secret))
+        for d in srv.app.others:                     # the other bots' SWLinks come up too, so the picker can switch
+            if (d / CONFIG_NAME).is_file() and not folder_running(d):
+                try:
+                    srv.app._start_other(d)
+                except OSError as e:
+                    print("could not start SWLink in %s: %s" % (d.name, e), flush=True)
         return serve(srv, cfg, open_browser)
     finally:
         lock.close()

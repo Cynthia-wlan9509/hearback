@@ -132,6 +132,9 @@ EN: dict[str, str] = {
         "This order number was already used in another server. One order works in one server only. "
         "If this looks wrong, please contact the server owner."),
     "supporter_note_elsewhere": "[SWLink] $who sent order $order, but it is already used in $server.",
+    "supporter_try_other": (
+        "Thank you! This order is below what this server needs for the supporter role, but it does count in another "
+        "server ($server). Join that server and send the order number to the bot there."),
     "codes_ok": ("Here is the code for this device ($device): it is the next message, on its own.\n"
                  "On a phone, long-press it and copy, then paste it into the app. It works on this device only; "
                  "please keep it to yourself."),
@@ -230,6 +233,7 @@ ZH: dict[str, str] = {
     "supporter_note_left": "[SWLink] $who 在订单 $order 查完之前离开了服务器，这次核对已取消。",
     "supporter_claimed_elsewhere": "这个订单号已经在另一个服务器用过了，一个订单只能用在一个服务器。有问题请联系群主。",
     "supporter_note_elsewhere": "[SWLink] $who 发来订单 $order，但它已经在 $server 用过了。",
+    "supporter_try_other": "谢谢支持！这笔订单不够这个服务器的支持者身份组，但可以在另一个服务器（$server）领：加入那个服务器，把订单号私信给那边的机器人。",
     "codes_ok": ("你这台手机（本机码 $device）的授权码在下一条消息里，单独一条。\n"
                  "长按那条消息 → 复制，回到游戏点「粘贴授权码」→「验证并进入」。这个码只能这台手机用，请不要外传。"),
     "codes_again": "这台手机（本机码 $device）之前已经发过授权码，下一条消息再发一次：长按它 → 复制，回游戏点「粘贴授权码」。",

@@ -184,11 +184,13 @@ function renderShell() {
   renderDemo();
   renderHowto();
 }
-/* server picker: one bot, several workspace folders ([swlink] workspaces); switching re-renders every page */
+/* server picker: workspace folders of this bot ([swlink] workspaces) re-render every page; SWLinks of other bots
+   ([swlink] others) open in this tab (started first when they are not running) */
 function spacePicker() {
   if (!SPACES || (SPACES.items.length < 2 && !SPACES.broken.length)) return null;
   const sel = h("select", { class: "space-select", "aria-label": t("ws.label"), onchange: (ev) => openSpace(ev.target.value) },
-    SPACES.items.map((w) => h("option", { value: w.id, selected: w.current }, w.name + (w.home ? t("ws.home") : ""))));
+    SPACES.items.map((w) => h("option", { value: w.id, selected: w.current },
+      w.name + (w.home ? t("ws.home") : "") + (w.other && !w.running ? t("ws.off") : ""))));
   const box = h("div", { class: "space" }, h("div", { class: "nav-group" }, t("ws.label")), sel);
   for (const b of SPACES.broken) box.appendChild(h("div", { class: "sub small-text space-broken", title: b.error }, t("ws.broken", { f: b.folder })));
   return box;
@@ -197,6 +199,7 @@ async function loadSpaces() {
   try { SPACES = await api("GET", "/api/workspaces"); } catch (e) { SPACES = null; }
 }
 async function openSpace(id) {
+  if (String(id).startsWith("o")) return openOther(String(id).slice(1));
   try {
     SPACES = await api("POST", "/api/workspaces/" + encodeURIComponent(id) + "/open", {});
     const w = SPACES.items.find((x) => x.current);
@@ -204,6 +207,20 @@ async function openSpace(id) {
     await refreshStatus();
   } catch (e) { fail(e); }
   renderPage();
+}
+async function openOther(i) {
+  const w = SPACES.items.find((x) => x.id === "o" + i);
+  const n = w ? w.name : "";
+  toast(t("ws.switching", { n }));
+  for (let k = 0; k < 30; k++) {
+    try {
+      const r = await api("POST", "/api/others/" + encodeURIComponent(i) + "/open", {});
+      if (r.url) { location.href = r.url; return; }
+    } catch (e) { fail(e); break; }
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  toast(t("ws.other_failed", { n }));
+  renderShell();
 }
 /* demo mode (fake data): a banner above every page */
 function renderDemo() {
