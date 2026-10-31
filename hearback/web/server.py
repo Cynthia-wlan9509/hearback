@@ -397,26 +397,27 @@ class App:
             return None
 
     def _order_space(self, live: list[Workspace], uid: str, no: str) -> Workspace:
-        """Servers the person is in, those still lacking the role first; of these, the first whose dry run takes the
-        order (amount, required roles: one server's minimum must not turn away an order another would take)."""
-        need, have = [], []
+        """Servers the person is in, those still lacking the role first, then the ones they are not in; the first
+        whose dry run takes the order (amount, required roles: one server's minimum must not turn away an order
+        another would take). One they are not in answers "join first". None takes it: the first they are in."""
+        need, have, away = [], [], []
         for ws in live:
             p = self._member_in(ws, uid)
             if p is None:
+                away.append((ws, Person(id=uid)))
                 continue
             try:
                 role = str(ws.supporters_store.load()["role_id"])
             except SupporterError:
                 role = ""
             (need if role and role not in {str(r) for r in p.role_ids} else have).append((ws, p))
+        for ws, p in need + have + away:
+            try:
+                if ws.supporters.handle_order(p, no, dry_run=True).reply_key in ("ok", "ok_again"):
+                    return ws
+            except HearbackError:
+                continue
         ranked = need + have
-        if len(ranked) > 1:
-            for ws, p in ranked:
-                try:
-                    if ws.supporters.handle_order(p, no, dry_run=True).reply_key in ("ok", "ok_again"):
-                        return ws
-                except HearbackError:
-                    continue
         return ranked[0][0] if ranked else live[0]
 
     def _claimed_elsewhere(self, ws: Workspace, other: Workspace, uid: str, channel_id: str, no: str) -> bool:

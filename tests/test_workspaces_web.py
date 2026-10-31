@@ -299,6 +299,20 @@ def test_an_order_one_server_would_turn_away_goes_to_one_that_takes_it(two):
     assert app._supporter_dm("7", "8", order) and calls == ["home"]
 
 
+def test_an_order_only_a_server_they_are_not_in_takes_goes_there(two):
+    """In home only, below home's minimum: the second server takes any amount, so it answers (asking them to join)."""
+    from hearback.supporters import Outcome, Person
+    app = two.srv.app
+    home, second = app.home, app.spaces[1]
+    calls = []
+    for ws, name, key in ((home, "home", "below_min"), (second, "second", "ok")):
+        ws.supporter_bot.dm_on = lambda: True
+        ws.supporter_bot.handle_dm = (lambda n: lambda a, c, t: calls.append(n) or True)(name)
+        ws.supporters.handle_order = (lambda k: lambda p, no, now=None, **kw: Outcome(k))(key)
+    app._member_in = lambda ws, uid: Person(id=uid) if ws is home else None
+    assert app._supporter_dm("7", "8", "202610300000000000000004") and calls == ["second"]
+
+
 def test_a_second_swlink_on_the_same_folder_opens_the_running_one(tmp_path, monkeypatch):
     """A second start would bind another port, connect the same bot and answer every DM twice."""
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
