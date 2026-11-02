@@ -1,21 +1,19 @@
 # SWLink
 
-**A local console and Discord bot for small game communities. The AI drafts; you approve.**
+**A local console and Discord bot for small game communities. You answer; the AI helps when you ask.**
 
-SWLink runs on your own computer and opens in your browser. One Discord bot, five jobs:
+SWLink runs on your own computer and opens in your browser. One Discord bot, four jobs:
 
 - **Feedback inbox**: every forum channel of your server in one list, bugs, ideas and any forum you open later. Read
   and answer in place. The AI helps only when you press its button, so nothing runs up a bill while you are away.
   When a fix ships, every reporter hears back.
 - **Chat**: per channel and for DMs, choose ignore, draft only (you approve), or auto reply with an hourly cap.
-- **Supporters**: people who paid on Afdian (爱发电) DM the bot their order number and get a supporter role.
-  Amounts stay private.
 - **Bot messages**: fix a typo in, or delete, anything the bot posted.
 - **Agents**: Claude Code, Codex and other MCP clients can triage and propose, but never send.
 
 ![The feedback inbox in demo mode](docs/images/swlink-inbox.jpg)
 
-Try it without Discord. Demo mode runs on a fake server, fake orders and a fake model; nothing connects anywhere:
+Try it without Discord. Demo mode runs on a fake server and a fake model; nothing connects anywhere:
 
 ```
 pip install -e ".[all]"
@@ -40,7 +38,7 @@ thread, for the build they actually run. Everything below also works from the co
 
 ## Why
 
-Small teams (indie and fan game projects, open-source tools) collect bug reports in a Discord forum.
+Small teams (indie game projects, open-source tools) collect bug reports in a Discord forum.
 Collecting is easy. The loop after it is what breaks:
 
 - the same root cause is reported six times in six different words;
@@ -138,13 +136,11 @@ The workflow an agent should follow is in [integrations/AGENT_PLAYBOOK.md](integ
 
 ## SWLink: web console and chat bot
 
-![The Supporters page in demo mode](docs/images/swlink-supporters.jpg)
-
 SWLink is an optional, opt-in part of Hearback: a local web page plus an always-on chat bot for your Discord
 server. You choose which servers, channels and DMs the bot answers in, which **agent** (system prompt) answers,
 which **LLM** (your own API keys: Anthropic, OpenAI, DeepSeek, or any OpenAI- or Anthropic-compatible relay), and
-whether it is **off**, **drafts for your approval**, or **replies automatically**. The same page shows the
-approval queue and the bug-forum ledger.
+whether it is **off**, **drafts for your approval**, or **replies automatically**. Forum posts have their own page,
+**All feedback**, which is where the console opens.
 
 [SWLink user manual (Chinese)](docs/swlink-manual.zh-CN.md)
 
@@ -158,7 +154,7 @@ press Start). Add a model under **Models** if you want the AI's help. Then **All
 `hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
 
 Want to look around first? `hearback web --demo` (add `--lang zh` for Chinese data) opens the same console on made-up
-data: a fake server, forum, queue and supporters. It needs no Discord, no key and no network, saves nothing, and its
+data: a fake server, forums and a queue. It needs no Discord, no key and no network, saves nothing, and its
 temporary folder disappears when you stop it. Use it to try the pages, and for screenshots and screen recordings.
 
 Safety model:
@@ -186,22 +182,6 @@ drafts, into `triage.ai`. **Agents** picks which agent each forum uses, or No AI
 list** under Settings writes a markdown task sheet grouped by cluster for a coding agent. The **Bot messages** page lists
 what the bot itself posted in a thread or channel so you can fix a typo or delete a message. Screenshots (up to 3) and
 error lines from `.txt`/`.log` attachments are sent along with a request to the model.
-
-**Supporter roles from Afdian.** Afdian (爱发电) now has an official Discord connection: authorize its bot in your creator
-settings and map plan tiers to roles, and a supporter who pays and then authorizes on Discord gets the role. If paid-to-role
-is all you need, use that instead of this page. It also works while your computer is off.
-
-Use the **Supporters** page when the role must require another role first (such as passing an entry check), when you
-would rather not give a third-party bot permissions like kicking members and creating invites, or when you want to keep
-the link between orders and Discord accounts yourself. The cost: your computer has to be on, and supporters have one more
-step. Don't let the official bot and SWLink manage the same role.
-
-How it works: a supporter pays on Afdian, DMs the bot the order
-number, the bot checks it with Afdian's open API and gives the supporter role. Paste your Afdian `user_id` and API token
-(the token goes to the OS keyring or `HEARBACK_AFDIAN_TOKEN`, never to a file), pick the role, try **Simulate a DM**,
-then switch on **DM checking**. Replies are fixed templates (no model), amounts are never shown or sent anywhere, order
-numbers are masked in notices and logs, an order can be claimed once, and the owner can claim or revoke by hand. If the
-bot's role sits below the supporter role the page tells you exactly what to drag where.
 
 ## Safety model
 
