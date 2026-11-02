@@ -8,6 +8,7 @@ this module contains them. Writes made from the page use the actor `human:web`.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hmac
 import json
@@ -16,6 +17,7 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import webbrowser
@@ -23,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from hearback import __version__, actions, editor, review
+from hearback import __version__, actions, editor, feedback, review
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
@@ -32,13 +34,13 @@ from hearback.config import CONFIG_NAME, DATA_DIR, Config, load_config, save_dis
 from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import STATUSES, Ledger
 from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
-                          scrub_obj)
+                          scrub_obj, take_usage)
 from hearback.queue import Queue
 from hearback.supporters import (Person, SupporterBot, SupporterError, Supporters, SupporterStore, check_id,
                                  check_order_no, clean_settings, extract_order_numbers, mask, match_remarks,
                                  parse_amount)
-from hearback.sync import format_delta, sync as run_sync
-from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, setup_stdio
+from hearback.sync import format_delta, sync as run_sync, sync_all
+from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, is_image, setup_stdio
 from hearback.welcome import Welcome
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -65,6 +67,9 @@ DETAIL_REPLIES = 30
 AFDIAN_DEV_URL = "https://afdian.com/dashboard/dev"
 MEMBER_LIST_LIMIT = 1000          # the most members one REST call returns; used for remark suggestions
 MEMBER_CACHE_S = 60
+FILE_MAX = 8 * 1024 * 1024        # the biggest picture the page asks to see
+BULK_MAX = 100                    # posts in one "let the AI go through them" run
+FEEDBACK_WHY = "Written in the feedback inbox and sent by a person"
 
 
 def _names(v: Any) -> list[str]:
@@ -120,6 +125,8 @@ class Workspace:
         self.codes = Codes(cfg.codes or {}, cfg.data_dir, lang=cfg.language, templates_dir=cfg.templates_dir,
                            ledger=self.ledger, clock=app.clock, runner=app._code_runner)
         self.welcome = Welcome(cfg.welcome or {}, cfg.root, cfg.data_dir, self.ledger)
+        self.forums = feedback.ForumSettings(cfg.data_dir)
+        self.sync_lock = threading.Lock()    # one pull from Discord at a time per server
 
 
 class App:
@@ -143,6 +150,7 @@ class App:
         self._code_runner = code_runner or subprocess.run      # [codes] command; tests pass a fake
         self.llm = llm_store or LLMStore(cfg.data_dir)
         self.agents = AgentStore(cfg.data_dir)
+        self.usage = feedback.Usage(cfg.data_dir, clock)
         self.rules = RuleStore(cfg.data_dir)
         self.inbox = Inbox(cfg.data_dir)
         self._dir_cache: tuple[float, list[dict], str] | None = None
@@ -329,11 +337,18 @@ class App:
         except ApiError as e:
             raise HearbackError(e.message) from None
 
+    def _ask(self, system: str, messages: list, max_tokens: int | None = None, prefer: str | None = None) -> tuple[str, str]:
+        """Every model call of the console goes through here, so the page can say what they cost this month."""
+        take_usage()
+        text, pid = complete_any(self.llm, system, messages, max_tokens, prefer=prefer)
+        self.usage.add(self._model_of(pid), take_usage())
+        return text, pid
+
     def _llm_call(self, agent: dict, system: str, messages: list[dict]) -> str:
-        return complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)[0]
+        return self._ask(system, messages, prefer=agent.get("profile_id") or None)[0]
 
     def _review_llm(self, system: str, messages: list, max_tokens: int, prefer: str | None) -> tuple[str, str]:
-        return complete_any(self.llm, system, messages, max_tokens, prefer=prefer)
+        return self._ask(system, messages, max_tokens, prefer)
 
     def _model_of(self, profile_id: str) -> str:
         try:
@@ -598,6 +613,15 @@ class App:
         add("POST", "/api/agents", lambda q: (201, self.agents.create(q.body)))
         add("PUT", "/api/agents/([\\w-]+)", lambda q: (200, self.agents.update(q.groups[0], q.body)))
         add("DELETE", "/api/agents/([\\w-]+)", self.api_agent_delete)
+        add("GET", "/api/feedback", self.api_feedback)
+        add("POST", "/api/feedback/sync", self.api_feedback_sync)
+        add("POST", "/api/feedback/review", self.api_feedback_review)
+        add("PUT", "/api/feedback/forums/(\\d+)", self.api_feedback_forum)
+        add("GET", "/api/feedback/(\\d+)", self.api_feedback_thread)
+        add("GET", "/api/feedback/(\\d+)/file/(\\d+)", self.api_feedback_file)
+        add("POST", "/api/feedback/(\\d+)/ai", self.api_feedback_ai)
+        add("POST", "/api/feedback/(\\d+)/send", self.api_feedback_send)
+        add("POST", "/api/feedback/(\\d+)/mark", self.api_feedback_mark)
         add("GET", "/api/forum", self.api_forum)
         add("POST", "/api/forum/sync", self.api_forum_sync)
         add("GET", "/api/forum/review", self.api_review_status)
@@ -665,7 +689,10 @@ class App:
             "llm": {"id": active["id"], "name": active["name"], "model": active["model"]} if active else None,
             "token_set": tok["set"], "supporters": supporters,
             "workspaces": len(self.spaces) + len(self.broken) + len(self.others),
-            "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on}}
+            "checklist": {"token": tok["set"], "llm": llm_ready, "rule": rule_on},
+            "server": next((str(g.get("name") or "") for g in guilds if str(g["id"]) == self.cfg.guild_id), "") or self.cfg.root.name,
+            "inbox": self._inbox_counts(), "chat": bool(self.inbox.conversations()),
+            "waiting": sum(len(self.queue.list(st)) for st in ("pending", "approved", "failed"))}
 
     def api_bot_start(self, q: Request) -> tuple[int, Any]:
         return 200, self.runtime.start()
@@ -746,7 +773,7 @@ class App:
         rule = self.rules.rule_for(channel, guild_id is None)
         agent = self.agents.get_or_auto(q.body.get("agent") or rule.get("agent"))
         system, messages = build_messages(agent, history, target)
-        text, pid = complete_any(self.llm, system, messages, prefer=agent.get("profile_id") or None)
+        text, pid = self._ask(system, messages, prefer=agent.get("profile_id") or None)
         self.ledger.event(ACTOR, "ai_draft", channel, {"agent": agent["id"], "profile": pid})
         return 200, {"text": text, "agent": agent["id"], "profile": pid}
 
@@ -761,7 +788,7 @@ class App:
         if q.body.get("agent"):
             prefer = self.agents.get_or_auto(str(q.body["agent"])).get("profile_id") or None
         system, messages = build_polish(text)
-        out, pid = complete_any(self.llm, system, messages, prefer=prefer)
+        out, pid = self._ask(system, messages, prefer=prefer)
         out = clean_polish(out)
         if not out:
             raise ApiError(502, EMPTY_TEXT_ERROR)
@@ -930,7 +957,7 @@ class App:
                         for r in replies[-DETAIL_REPLIES:]],
             "triage": {k: tri.get(k, "") for k in ("status", "cluster", "root_cause", "fix", "reviewed", "reviewed_by")},
             "ai": tri.get("ai") if isinstance(tri.get("ai"), dict) else None,
-            "needs_review": review.needs_review(rec), "forum_tags": list((data.get("tags") or {}).values()),
+            "needs_review": review.needs_review(rec), "forum_tags": review.forum_tags(data, tid),
             "link": "https://discord.com/channels/%s/%s" % (guild, tid) if guild else ""}
 
     def api_review_status(self, q: Request) -> tuple[int, Any]:
@@ -983,7 +1010,7 @@ class App:
         add, remove = _names(q.body.get("add")), _names(q.body.get("remove"))
         if not text and not add and not remove:
             raise ApiError(400, "write a reply or pick a tag first")
-        known = {t.lower(): t for t in (self.ledger.load().get("tags") or {}).values()}
+        known = {t.lower(): t for t in review.forum_tags(self.ledger.load(), tid)}
         if known:
             bad = [n for n in add + remove if n.lower() not in known]
             if bad:
@@ -1009,6 +1036,246 @@ class App:
         path, md, n = review.export_fix_list(self.ledger, ids)
         self.ledger.event(ACTOR, "export_fix_list", None, {"threads": n, "file": path.name})
         return 200, {"path": str(path), "filename": path.name, "markdown": md, "count": n}
+
+    # ---- the feedback inbox: every forum of the server in one list, a person answers in place
+    def _forum_rows(self, data: dict) -> list[dict]:
+        """The forums to show, in Discord's order. Before the first pull: the configured forum, unnamed."""
+        hidden = self.cur.forums.hidden()
+        known = data["forums"] or ({self.cfg.forum_id: {"name": "", "position": 0, "tags": data["tags"]}}
+                                   if self.cfg.forum_id else {})
+        rows = sorted(known.items(), key=lambda kv: (kv[1].get("position", 0), int(kv[0])))
+        return [{"id": f, "name": v.get("name", ""), "tags": list((v.get("tags") or {}).values()),
+                 "agent": self._forum_agent_id(f), "hidden": f in hidden} for f, v in rows]
+
+    def _forum_agent_id(self, forum: str) -> str:
+        """A forum's own choice, else the bug desk for the configured bug forum, else the general agent."""
+        chosen = str(self.cur.forums.get(forum).get("agent") or "")
+        if chosen:
+            return chosen
+        return review.DEFAULT_AGENT if forum == self.cfg.forum_id else "auto"
+
+    def _home_forum(self, data: dict, rec: dict) -> str:
+        return str(rec.get("forum_id") or data.get("forum_id") or self.cfg.forum_id or "")
+
+    def _inbox_rows(self, data: dict) -> list[dict]:
+        hidden = self.cur.forums.hidden()
+        staff = feedback.staff_ids(data, self.cfg.approvers)
+        out = []
+        for tid, rec in data["threads"].items():
+            forum = self._home_forum(data, rec)
+            state = feedback.inbox_state(tid, rec, staff)
+            if state and forum not in hidden and (not data["forums"] or forum in data["forums"]):
+                out.append(feedback.row(tid, rec, state, staff, forum))
+        out.sort(key=lambda r: r["time"] or "", reverse=True)
+        return out
+
+    def _inbox_counts(self) -> dict:
+        data = self.ledger.load()
+        todo = [r for r in self._inbox_rows(data) if r["state"] == "todo"]
+        return {"todo": len(todo), "forums": [{"id": f["id"], "name": f["name"], "todo": sum(r["forum"] == f["id"] for r in todo)}
+                                              for f in self._forum_rows(data) if not f["hidden"]]}
+
+    def _spend(self) -> dict:
+        m = self.usage.this_month()
+        return {"calls": m["calls"], "cost": m["cost"], "complete": not m["unpriced"]}
+
+    def _active_model(self) -> tuple[str, str]:
+        active = self.llm.active_public()
+        return (active["name"], active["model"]) if active else ("", "")
+
+    def api_feedback(self, q: Request) -> tuple[int, Any]:
+        data = self.ledger.load()
+        today = time.strftime("%Y-%m-%d", time.gmtime(self.clock()))
+        handled = sum(1 for e in self.ledger.read_events(1000)
+                      if e.get("action") == "feedback_done" and str(e.get("t") or "").startswith(today))
+        name, model = self._active_model()
+        return 200, {"forums": self._forum_rows(data), "items": self._inbox_rows(data), "synced_at": data.get("synced_at", ""),
+                     "handled_today": handled, "spend": self._spend(), "model": name, "per_post": feedback.estimate(model),
+                     "can_pull": bool(self.cfg.guild_id or self.cfg.forum_id or data.get("guild_id"))}
+
+    def api_feedback_sync(self, q: Request) -> tuple[int, Any]:
+        ws = self.cur
+        if not ws.sync_lock.acquire(blocking=False):
+            raise ApiError(409, "pull_busy")
+        try:
+            delta = sync_all(self.client(), ws.ledger, ws.cfg, download=True, actor=ACTOR, skip=ws.forums.hidden())
+        finally:
+            ws.sync_lock.release()
+        self.directory()             # the server's name for the sidebar, also while the bot is offline
+        return 200, {"new": len(delta.new_threads), "replies": len(delta.with_replies),
+                     "warnings": [scrub(w) for w in delta.warnings]}
+
+    def _feedback_thread(self, ident: str) -> tuple[str, dict, dict]:
+        data = self.ledger.load()
+        rec = data["threads"].get(ident)
+        if rec is None:
+            raise ApiError(404, "no such post")
+        return ident, rec, data
+
+    @staticmethod
+    def _files(rec: dict) -> list[str]:
+        """Attachment entries of a post, the post's own first. The page refers to them by position."""
+        return [str(a) for a in rec.get("attachments") or []] + [str(a) for r in rec.get("replies") or []
+                                                                 for a in r.get("attachments") or []]
+
+    def api_feedback_thread(self, q: Request) -> tuple[int, Any]:
+        tid, rec, data = self._feedback_thread(q.groups[0])
+        tri = rec.get("triage") or {}
+        forum = self._home_forum(data, rec)
+        files = self._files(rec)
+        spot = {"n": 0}
+
+        def views(entries: Any) -> list[dict]:
+            out = []
+            for a in entries or []:
+                out.append({"i": spot["n"], "name": os.path.basename(str(a)).split("_", 1)[-1], "image": is_image(str(a))})
+                spot["n"] += 1
+            return out
+
+        post_files = views(rec.get("attachments"))
+        seen, messages = set(), []
+        posted = {str(p.get("message_id")) for p in tri.get("replies_posted") or []}
+        staff = feedback.staff_ids(data, self.cfg.approvers)
+        for r in rec.get("replies") or []:
+            seen.add(str(r.get("id")))
+            messages.append({"id": str(r.get("id")), "author": r.get("author", ""), "time": r.get("time", ""),
+                             "content": str(r.get("content") or "")[:4000], "files": views(r.get("attachments")),
+                             "bot": bool(r.get("bot")) or str(r.get("id")) in posted,
+                             "staff": str(r.get("author_id") or "") in staff})
+        for p in tri.get("replies_posted") or []:      # sent from here, not pulled back yet
+            if str(p.get("message_id")) not in seen:
+                messages.append({"id": str(p.get("message_id")), "author": "", "time": p.get("time", ""),
+                                 "content": str(p.get("content") or "")[:4000], "files": [], "bot": True, "staff": True})
+        messages.sort(key=lambda m: int(m["id"]) if m["id"].isdigit() else 0)
+        paths = review.thread_files(self.ledger, rec)
+        ai = tri.get("ai") if isinstance(tri.get("ai"), dict) else None
+        guild = str(data.get("guild_id") or self.cfg.guild_id or "")
+        return 200, {"id": tid, "forum": forum, "title": rec.get("title", ""), "author": rec.get("author", ""),
+                     "created": rec.get("created", ""), "body": str(rec.get("body") or "")[:8000], "files": post_files,
+                     "messages": messages[-DETAIL_REPLIES:], "more": max(0, len(messages) - DETAIL_REPLIES), "tags": list(rec.get("tags") or []),
+                     "forum_tags": review.forum_tags(data, tid), "agent": self._forum_agent_id(forum),
+                     "state": feedback.inbox_state(tid, rec, staff) or "done", "has_files": len(files),
+                     "log": review.log_excerpt(paths), "log_errors": len(review.error_lines(paths)),
+                     "ai": ai, "ai_stale": review.ai_is_stale(rec),
+                     "link": "https://discord.com/channels/%s/%s" % (guild, tid) if guild else ""}
+
+    def api_feedback_file(self, q: Request) -> tuple[int, Any]:
+        """One attachment for the page: a picture as a data: link (the only kind of link the page may show from here)."""
+        _tid, rec, _data = self._feedback_thread(q.groups[0])
+        files = self._files(rec)
+        i = int(q.groups[1])
+        if i >= len(files):
+            raise ApiError(404, "no such file")
+        where = self.ledger.abs_path(files[i])
+        if not isinstance(where, Path):
+            return 200, {"url": where}
+        path = where.resolve()
+        if self.ledger.dir.resolve() not in path.parents or not path.is_file():
+            raise ApiError(404, "no such file")
+        if path.stat().st_size > FILE_MAX:
+            raise ApiError(413, "file_too_big")
+        raw = path.read_bytes()
+        kind = review.sniff_image(raw[:16])
+        if not kind:
+            raise ApiError(415, "not a picture")
+        return 200, {"data": "data:%s;base64,%s" % (kind, base64.b64encode(raw).decode("ascii"))}
+
+    def _agent_for_post(self, tid: str) -> dict:
+        data = self.ledger.load()
+        aid = self._forum_agent_id(self._home_forum(data, data["threads"][tid]))
+        if aid == feedback.NO_AGENT:
+            raise ApiError(400, "forum_no_ai")
+        return self.agents.get_or_auto(aid)
+
+    def api_feedback_ai(self, q: Request) -> tuple[int, Any]:
+        """The AI looks at one post because a person pressed the button. It only writes a draft; nothing is sent."""
+        tid, _rec, _data = self._feedback_thread(q.groups[0])
+        agent = self._agent_for_post(tid)
+        if not self.llm.candidates(agent.get("profile_id") or None):
+            raise ApiError(400, "no_model")
+        res, pid = review.review_thread(self.ledger, self._review_llm, tid, system=review.system_prompt(agent),
+                                        prefer=agent.get("profile_id") or None)
+        ai = review.save_ai_result(self.ledger, tid, res, model=self._model_of(pid), profile=pid)
+        return 200, {"ai": ai, "agent": agent["name"], "spend": self._spend()}
+
+    def api_feedback_review(self, q: Request) -> tuple[int, Any]:
+        """Drafts for every waiting post without one (in one forum, or all). Only on request, and only drafts."""
+        data = self.ledger.load()
+        forum = str(q.body.get("forum") or "")
+        ids = [r["id"] for r in self._inbox_rows(data)
+               if r["state"] == "todo" and not r["has_draft"] and (not forum or r["forum"] == forum)
+               and self._forum_agent_id(r["forum"]) != feedback.NO_AGENT][:BULK_MAX]
+        if not ids:
+            raise ApiError(400, "nothing_to_review")
+        if not self.llm.candidates(None):
+            raise ApiError(400, "no_model")
+        try:
+            job = self.review.start(ids, agent_of=self._agent_for_post)
+        except review.ReviewBusy as e:
+            raise ApiError(409, str(e)) from None
+        self.ledger.event(ACTOR, "ai_review_start", None, {"threads": len(ids)})
+        return 200, {"job": job, "total": len(ids)}
+
+    def api_feedback_send(self, q: Request) -> tuple[int, Any]:
+        """A person pressed Send: that is the approval, so the reply and the tags go out at once (through the queue,
+        which keeps its record and checks what reached Discord)."""
+        tid, rec, data = self._feedback_thread(q.groups[0])
+        text = str(q.body.get("text") or "").strip()
+        add, remove = _names(q.body.get("add")), _names(q.body.get("remove"))
+        if not text and not add and not remove:
+            raise ApiError(400, "write a reply or pick a tag first")
+        if len(text) > SEND_LIMIT:
+            raise ApiError(400, "the message is over %d characters" % SEND_LIMIT)
+        known = {t.lower(): t for t in review.forum_tags(data, tid)}
+        bad = [n for n in add + remove if n.lower() not in known]
+        if bad:
+            raise ApiError(400, "no forum tag named %s. Available: %s" % (", ".join(map(repr, bad)), ", ".join(known.values())))
+        add, remove = [known[n.lower()] for n in add], [known[n.lower()] for n in remove]
+        made = []
+        if add or remove:
+            made.append(self.queue.propose("tags", actor=ACTOR, thread=tid, add=add, remove=remove, why=FEEDBACK_WHY).id)
+        if text:
+            made.append(self.queue.propose("reply", actor=ACTOR, thread=tid, text=text, why=FEEDBACK_WHY, force=True).id)
+        self.queue.approve(made, ACTOR)
+        rep = self.queue.send(self.client(), self.ledger, forum_id=self._home_forum(data, rec), delay=self.cfg.send_delay,
+                              actor=ACTOR, ids=made)
+        if rep.failed:
+            clean = [p.id for p in rep.failed if not p.result.get("message_ids")]
+            if clean:                 # nothing went out and the words are still in the box: no leftovers in Waiting
+                self.queue.reject(clean, ACTOR, "send failed; still in the reply box")
+            raise ApiError(502, scrub(rep.failed[0].error)[:300] or "send failed")
+        statuses = {v: k for k, v in self.cfg.status_tags.items()}
+        patch = next(({"status": statuses[t]} for t in reversed(add) if t in statuses), None)
+        if patch:                     # the release flow reads the status, so a status tag keeps it in step
+            self.ledger.update_triage(tid, patch, actor=ACTOR)
+        feedback.set_mark(self.ledger, tid, None)
+        self.ledger.event(ACTOR, "feedback_done", tid, {"reply": bool(text), "tags": len(add) + len(remove)})
+        return 200, {"sent": [p.id for p in rep.sent], "mismatches": rep.mismatches}
+
+    def api_feedback_mark(self, q: Request) -> tuple[int, Any]:
+        tid, rec, data = self._feedback_thread(q.groups[0])
+        state = str(q.body.get("state") or "")
+        if state not in ("done", "open", "auto"):
+            raise ApiError(400, "state must be done, open or auto")
+        feedback.set_mark(self.ledger, tid, None if state == "auto" else state)
+        if state == "done":
+            self.ledger.event(ACTOR, "feedback_done", tid, {"skipped": True})
+        rec = self.ledger.load()["threads"][tid]
+        return 200, {"state": feedback.inbox_state(tid, rec, feedback.staff_ids(data, self.cfg.approvers))}
+
+    def api_feedback_forum(self, q: Request) -> tuple[int, Any]:
+        fields: dict[str, Any] = {}
+        if "agent" in q.body:
+            agent = str(q.body["agent"] or "")
+            if agent != feedback.NO_AGENT:
+                self.agents.get(agent)
+            fields["agent"] = agent
+        if "hidden" in q.body:
+            fields["hidden"] = bool(q.body["hidden"])
+        if not fields:
+            raise ApiError(400, "send agent and/or hidden")
+        self.cur.forums.set(q.groups[0], **fields)
+        return 200, {"forums": self._forum_rows(self.ledger.load())}
 
     # ---- bot messages (edit or delete what the bot itself posted)
     def _place_label(self, channel: str) -> str:
@@ -1348,7 +1615,8 @@ class App:
                       % (urllib.parse.quote(bot_id), INVITE_PERMISSIONS))
         return 200, {"token": self.token_state(), "port": self.port, "bot_id": bot_id, "invite_url": invite,
                      "portal_url": PORTAL_URL, "hourly_cap": self.cfg.swlink_hourly_cap, "version": __version__,
-                     "guild_id": self.cfg.guild_id, "forum_id": self.cfg.forum_id}
+                     "guild_id": self.cfg.guild_id, "forum_id": self.cfg.forum_id,
+                     "welcome_file": str(self.cfg.root / self.cfg.welcome["file"]) if (self.cfg.welcome or {}).get("enabled") else ""}
 
     def api_settings_forum(self, q: Request) -> tuple[int, Any]:
         ids = {k: str(q.body.get(k) or "").strip() for k in ("guild_id", "forum_id") if k in q.body}

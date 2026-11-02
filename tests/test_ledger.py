@@ -131,7 +131,7 @@ def test_failed_save_keeps_old_file_and_cleans_up(tmp_path, monkeypatch):
 
 def test_load_defaults_and_keeps_unknown_fields(tmp_path):
     ledger = make_ledger(tmp_path)
-    assert ledger.load() == {"schema": 1, "forum_id": "", "synced_at": "", "tags": {}, "threads": {}}
+    assert ledger.load() == {"schema": 1, "forum_id": "", "forums": {}, "synced_at": "", "tags": {}, "threads": {}}
     with ledger.locked():
         d = ledger.load()
         d["something_new"] = {"x": 1}

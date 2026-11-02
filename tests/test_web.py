@@ -198,15 +198,12 @@ def test_the_page_never_uses_innerhtml_or_inline_script():
     assert "<script>" not in html and "style=" not in html and "http" not in html.replace("<!doctype html>", "")
 
 
-def test_the_approvals_page_edits_pending_text_and_the_metrics_grid_has_no_lone_card():
+def test_the_approvals_page_edits_pending_text():
     from pathlib import Path
     static = Path(web.STATIC_DIR)
     js = (static / "app.js").read_text(encoding="utf-8")
     assert 'api("PUT", "/api/queue/" + p.id + "/text", { text: ta.value })' in js
     assert 'TEXT_KINDS.includes(p.kind)' in js and 't("common.edit")' in js and 'if (bar && !isFailed) showButtons();' in js   # pending only
-    css = (static / "app.css").read_text(encoding="utf-8")
-    assert "grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))" in css
-    assert "@media (max-width: 1265px) { .metrics:has(> :nth-child(6))" in css
 
 
 # ---------------------------------------------------------------- port handling
@@ -673,10 +670,10 @@ def test_llm_profiles_take_max_concurrent_and_default_to_2048_tokens(web_env):
 def test_the_chat_page_fills_the_window_and_the_composer_cannot_fall_off():
     css = (web.STATIC_DIR / "app.css").read_text(encoding="utf-8")
     js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    assert ".main.fill { height: 100vh; display: flex; flex-direction: column;" in css
-    assert ".main.fill .view { flex: 1; min-height: 0;" in css and ".main.fill .conv { flex: 1; height: auto; min-height: 0; }" in css
+    assert ".page.fill { overflow: hidden; }" in css
+    assert ".page.fill > .view { flex: 1; min-height: 0;" in css and ".page.fill .conv { flex: 1; height: auto; min-height: 0; }" in css
     assert 'classList.toggle("fill", PAGE === "conversations")' in js
-    assert "scrollIntoView" not in js                      # new messages only scroll their own box
+    assert "scrollIntoView(" not in js                     # new messages only scroll their own box
 
 
 def test_approvals_page_has_an_approve_all_that_still_needs_send():

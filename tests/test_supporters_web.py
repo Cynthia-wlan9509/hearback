@@ -722,9 +722,9 @@ def test_the_orders_table_and_the_claim_dialog_use_plain_text_and_the_new_copy()
     assert "innerHTML" not in js                                  # the remark and the nickname go in as text nodes
 
 
-def test_the_page_is_in_the_menu_after_bot_messages_and_wired_to_the_api():
+def test_the_page_is_in_the_menu_when_on_and_wired_to_the_api():
     js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    assert '"botmsgs", "supporters"]' in js and "supporters: pageSupporters" in js
+    assert 's.supporters ? "supporters" : null' in js and "supporters: pageSupporters" in js
     for route in ("/api/supporters/settings", "/api/supporters/token", "/api/supporters/test", "/api/supporters/orders",
                   "/api/supporters/claims", "/api/supporters/link", "/api/supporters/unlink", "/api/supporters/simulate",
                   "/roles", "/members?q="):

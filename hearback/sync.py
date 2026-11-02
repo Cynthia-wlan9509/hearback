@@ -1,6 +1,6 @@
-"""Incremental sync: Discord forum -> ledger. Never touches triage or claims.
+"""Incremental sync: Discord forums -> ledger. Never touches triage or claims.
 
-Threads whose last_message_id, tags, title and archived flag match the ledger are skipped without
+`sync` pulls the configured forum, `sync_all` every forum channel of the server. Threads whose last_message_id, tags, title and archived flag match the ledger are skipped without
 fetching their messages. The result is a Delta sized for an LLM context.
 """
 from __future__ import annotations
@@ -8,10 +8,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Collection, Sequence
 
 from hearback.config import Config
-from hearback.discord import DiscordClient
+from hearback.discord import DiscordClient, DiscordError
 from hearback.ledger import Ledger
 from hearback.util import (IMAGE_EXT, HearbackError, is_image, norm_ts, now_iso, safe_name, short,
                            snowflake_time, warn)
@@ -19,6 +19,7 @@ from hearback.util import (IMAGE_EXT, HearbackError, is_image, norm_ts, now_iso,
 OK_MSG_TYPES = (0, 19, 20, 21)  # default / reply / slash command / thread starter; the rest are system messages
 DOWNLOAD_EXT = IMAGE_EXT + (".txt", ".log", ".json")   # images and plain-text logs only
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+FORUM_TYPES = (15, 16)          # forum and media channels: both hold posts
 
 
 @dataclass
@@ -66,11 +67,21 @@ def _author(msg: dict | None) -> str:
     return a.get("global_name") or a.get("username") or "?"
 
 
-def fetch_threads(client: DiscordClient, guild_id: str, forum_id: str) -> dict[str, dict]:
-    """All threads of the forum: active + archived public (paged). {thread_id: thread object}."""
+def forum_channels(client: DiscordClient, guild_id: str) -> list[dict]:
+    """The server's forum channels, in the order Discord shows them."""
+    chans = client.request("GET", "/guilds/%s/channels" % guild_id)
+    return sorted((c for c in chans if c.get("type") in FORUM_TYPES),
+                  key=lambda c: (c.get("position", 0), int(c["id"])))
+
+
+def fetch_threads(client: DiscordClient, guild_id: str, forum_id: str,
+                  active: list[dict] | None = None) -> dict[str, dict]:
+    """All threads of the forum: active + archived public (paged). {thread_id: thread object}.
+    `active` is the server's active thread list when the caller already has it."""
     found: dict[str, dict] = {}
-    data = client.request("GET", "/guilds/%s/threads/active" % guild_id)
-    for t in data.get("threads", []):
+    if active is None:
+        active = client.request("GET", "/guilds/%s/threads/active" % guild_id).get("threads", [])
+    for t in active:
         if str(t.get("parent_id")) == forum_id:
             found[str(t["id"])] = t
     before = None
@@ -221,40 +232,64 @@ def _unchanged(old: dict | None, t: dict, tags: list[str]) -> bool:
 # ---------------------------------------------------------------- the sync itself
 
 def sync(client: DiscordClient, ledger: Ledger, cfg: Config, *, download: bool = True,
-         actor: str = "human:cli", full: bool = False) -> Delta:
+         actor: str = "human:cli", full: bool = False, forums: Sequence[dict] | None = None,
+         keep: Collection[str] = ()) -> Delta:
     """Pull changes from Discord into the ledger and report what is new.
 
+    `forums` is a list of forum channel objects (see sync_all); without it, the configured forum. A listed forum the
+    bot may not read is skipped with a warning; the configured forum alone raises instead. Known forums that are not
+    listed are forgotten unless named in `keep`.
     `full` refetches every thread (catches edits and deletions the cheap change check cannot see, and
     retries attachment downloads that failed earlier).
 
     Network work (and attachment downloads) happens outside the ledger lock; the lock is only held
     to merge the fetched records into the freshest copy of the ledger.
     """
-    forum_id = cfg.require_forum()
-    forum = client.request("GET", "/channels/%s" % forum_id)
-    tag_map = {str(t["id"]): t["name"] for t in forum.get("available_tags", [])}
-    guild_id = cfg.guild_id or str(forum.get("guild_id") or "")
+    strict = forums is None
+    if forums is None:
+        forums = [client.request("GET", "/channels/%s" % cfg.require_forum())]
+    guild_id = cfg.guild_id or next((str(f["guild_id"]) for f in forums if f.get("guild_id")), "")
     if not guild_id:
         raise HearbackError("guild_id is not set and could not be read from the forum channel")
     snapshot = ledger.load()
     bot_id = str(snapshot.get("bot_user_id") or client.me()["id"])
+    active = client.request("GET", "/guilds/%s/threads/active" % guild_id).get("threads", [])
 
-    threads = fetch_threads(client, guild_id, forum_id)
     atts = _Attachments(client, ledger, download)
     fetched: dict[str, dict] = {}
+    home_of: dict[str, str] = {}
+    pulled: dict[str, dict] = {}
     skipped = 0
-    for tid in sorted(threads, key=int):
-        t = threads[tid]
-        tags = [tag_map.get(str(i), "?" + str(i)) for i in t.get("applied_tags") or []]
-        if not full and _unchanged(snapshot["threads"].get(tid), t, tags):
-            skipped += 1
+    warnings: list[str] = []
+    for forum in forums:
+        fid = str(forum["id"])
+        tag_map = {str(t["id"]): t["name"] for t in forum.get("available_tags", [])}
+        try:
+            threads = fetch_threads(client, guild_id, fid, active)
+            for tid in sorted(threads, key=int):
+                t = threads[tid]
+                tags = [tag_map.get(str(i), "?" + str(i)) for i in t.get("applied_tags") or []]
+                home_of[tid] = fid
+                if not full and _unchanged(snapshot["threads"].get(tid), t, tags):
+                    skipped += 1
+                    continue
+                fetched[tid] = build_record(t, fetch_messages(client, tid), tag_map, atts, bot_id)
+        except DiscordError as e:
+            if strict or e.status != 403:
+                raise
+            warnings.append("the bot may not read the forum #%s" % (forum.get("name") or fid))
             continue
-        fetched[tid] = build_record(t, fetch_messages(client, tid), tag_map, atts, bot_id)
+        pulled[fid] = {"name": forum.get("name") or "", "position": forum.get("position", 0), "tags": tag_map}
 
-    delta = Delta(total=0, skipped=skipped)
+    delta = Delta(total=0, skipped=skipped, warnings=warnings)
     with ledger.locked():
         data = ledger.load()
-        data.update(forum_id=forum_id, guild_id=guild_id, tags=tag_map, bot_user_id=bot_id)
+        listed = {str(x["id"]) for x in forums} | set(keep)
+        kept = data["forums"] if strict else {f: v for f, v in data["forums"].items() if f in listed}
+        data["forums"] = {**kept, **pulled}        # a forum that is gone is dropped; an unreadable one keeps what it had
+        data.update(guild_id=guild_id, bot_user_id=bot_id,
+                    forum_id=cfg.forum_id or data.get("forum_id") or next(iter(pulled), ""),
+                    tags={i: n for f in data["forums"].values() for i, n in f["tags"].items()})
         for tid, new in fetched.items():
             old = data["threads"].get(tid)
             rec = merge_record(old, new)
@@ -275,6 +310,9 @@ def sync(client: DiscordClient, ledger: Ledger, cfg: Config, *, download: bool =
                           "images": sum(1 for p in r["attachments"] if is_image(p)),
                           "files": len(r["attachments"])} for r in show if not r.get("bot")],
                 tag_change=tag_change))
+        for tid, fid in home_of.items():
+            if tid in data["threads"]:
+                data["threads"][tid]["forum_id"] = fid
         data["synced_at"] = now_iso()
         delta.total = len(data["threads"])
         if data["threads"] and all(not r.get("body") and not r.get("attachments") for r in data["threads"].values()):
@@ -287,6 +325,33 @@ def sync(client: DiscordClient, ledger: Ledger, cfg: Config, *, download: bool =
         ledger.event(actor, "sync", None, {"total": delta.total, "new": len(delta.new_threads),
                                            "replies": len(delta.with_replies), "tags": len(delta.tag_changes),
                                            "skipped": skipped})
+    return delta
+
+
+def sync_all(client: DiscordClient, ledger: Ledger, cfg: Config, *, download: bool = True, actor: str = "human:cli",
+             skip: Collection[str] = ()) -> Delta:
+    """sync over every forum channel of the server except `skip`; also notes who owns the server (their replies
+    count as staff replies)."""
+    guild_id = cfg.guild_id or str(ledger.load().get("guild_id") or "")
+    if not guild_id and cfg.forum_id:
+        guild_id = str(client.request("GET", "/channels/%s" % cfg.forum_id).get("guild_id") or "")
+    if not guild_id:
+        raise HearbackError("guild_id is not set: add the server id in Settings")
+    channels = forum_channels(client, guild_id)
+    forums = [f for f in channels if str(f["id"]) not in skip]
+    for f in forums:
+        f.setdefault("guild_id", guild_id)
+    delta = sync(client, ledger, cfg, download=download, actor=actor, forums=forums,
+                 keep=[str(f["id"]) for f in channels if str(f["id"]) in skip])
+    try:
+        owner = str(client.request("GET", "/guilds/%s" % guild_id).get("owner_id") or "")
+    except HearbackError:
+        owner = ""
+    if owner:
+        with ledger.locked():
+            data = ledger.load()
+            data["owner_id"] = owner
+            ledger.save(data)
     return delta
 
 

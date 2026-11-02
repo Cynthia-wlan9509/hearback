@@ -464,7 +464,7 @@ def test_tag_names_resolve_case_insensitively_and_refresh_when_stale(seeded):
     e = seeded
     with e.ledger.locked():                                   # ledger knows no tags at all
         d = e.ledger.load()
-        d["tags"] = {}
+        d["tags"], d["forums"] = {}, {}
         e.ledger.save(d)
     p = e.queue.propose("tags", actor="a", thread=e.threads["flicker"], add=["need info"])
     e.approve_and_send(p)

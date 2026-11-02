@@ -26,11 +26,11 @@ from hearback.ledger import Ledger
 from hearback.llm import LLMStore, complete_any
 from hearback.queue import Queue
 from hearback.supporters import SupporterStore, Supporters
-from hearback.sync import sync
+from hearback.sync import sync_all
 from hearback.util import HearbackError, atomic_write_text, ensure_data_dir
 from hearback.web import server
 from hearback.webdemo_seed import (AI_APPLIED, BOT_NAME, CHANNELS, CHAT, DRAFT_DEFAULT, DRAFTS, FAKE_AFDIAN_TOKEN,
-                                   FAKE_AFDIAN_USER, FAKE_BOT_TOKEN, FAKE_MODEL_KEY, FORUM, GUILD, HUMAN_TRIAGE, LANGS,
+                                   FAKE_AFDIAN_USER, FAKE_BOT_TOKEN, FAKE_MODEL_KEY, FORUM, GUILD, HUMAN_TRIAGE, IDEA_FORUM, IDEA_TAGS, IDEAS, LANGS,
                                    MEMBERS, MODEL_NAME, ORDERS, PLANS, QUEUE_APPROVED, QUEUE_FAILED,
                                    QUEUE_PENDING_REPLY, QUEUE_PENDING_TAGS, REVIEWS, ROLES, STATUS_TAGS, TAGS, THREADS,
                                    VARIANTS, pick)
@@ -242,6 +242,9 @@ class Demo:
             self.ids[t["key"]] = tid
             for who, text in t["replies"]:
                 fake.add_reply(tid, users[who], P(text), gap=5400)
+        ideas = fake.add_forum(P(IDEA_FORUM), [P(t) for t in IDEA_TAGS])
+        for who, title, body in IDEAS:
+            fake.add_thread(ideas, P(title), users[who], P(body), [], gap=4 * 3600)
         cfg = self.cfg = Config(
             root=root, guild_id=fake.guild_id, forum_id=forum, announce_channel_id=chan["news"], send_delay=0.0,
             language=self.lang, token_env="HEARBACK_DEMO_NO_TOKEN",       # never the real environment variable
@@ -257,7 +260,7 @@ class Demo:
         afdian = FakeAfdian(user_id=FAKE_AFDIAN_USER, token=FAKE_AFDIAN_TOKEN)
 
         self._model(llm_store)
-        sync(fake.client(), ledger, cfg, actor="human:web")
+        sync_all(fake.client(), ledger, cfg, actor="human:web")
         self._triage(ledger, llm_store)
         self._queue(queue, fake, ledger)
         self._chat(fake, chan, users, Inbox(cfg.data_dir))

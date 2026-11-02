@@ -115,6 +115,7 @@ class Ledger:
             data = {}
         data.setdefault("schema", SCHEMA)
         data.setdefault("forum_id", "")
+        data.setdefault("forums", {})
         data.setdefault("synced_at", "")
         data.setdefault("tags", {})
         data.setdefault("threads", {})

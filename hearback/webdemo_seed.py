@@ -29,6 +29,15 @@ BOT_NAME: Pair = ("Demo Bot", "演示机器人")
 ROLES: dict[str, Pair] = {"verified": ("Verified", "验证用户"), "supporter": ("Supporter", "支持者"),
                           "bot": ("Demo Bot", "演示机器人"), "mod": ("Moderator", "版主")}
 
+IDEA_FORUM: Pair = ("ideas", "想法专区")
+IDEA_TAGS: list[Pair] = [("Gameplay", "玩法"), ("Interface", "界面"), ("Planned", "计划做")]
+IDEAS: list[tuple[str, Pair, Pair]] = [
+    ("zoe_c", ("Save favourite colour sets", "配色能不能存收藏"),
+     ("I set the same colours every time. A saved list would be great.", "每次都要重新调颜色，想把喜欢的配色存下来，下次一键用。")),
+    ("omar_h", ("A dark theme for the menu", "菜单想要深色主题"),
+     ("The menu is very bright at night.", "晚上看菜单有点刺眼。")),
+]
+
 # username, display name, roles
 MEMBERS: list[tuple[str, Pair, list[str]]] = [
     ("dana_o", ("Dana", "丹娜"), ["mod", "verified"]), ("tom_d", ("Tom", "汤姆"), ["mod", "verified"]),

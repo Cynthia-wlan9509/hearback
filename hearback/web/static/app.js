@@ -2,22 +2,22 @@
 /* SWLink console: vanilla JS, no build step. All server and user text goes through textContent (see h()).
    The texts live in i18n.js (loaded first). */
 
-const NAV = [
-  ["nav.features", ["dashboard", "conversations", "approvals", "forum", "botmsgs", "supporters"]],
-  ["nav.system", ["llm", "agents", "rules", "logs", "settings"]],
-];
+const NAV_ICON = { conversations: "chat", approvals: "check", supporters: "heart", llm: "model", agents: "persona", settings: "settings" };
+const UNDER_SETTINGS = ["conversations", "approvals", "botmsgs", "supporters", "rules", "logs"];
+const NO_HOWTO = ["inbox", "llm", "agents", "settings"];
 const MODES = ["off", "draft", "auto"];
-const STATUSES = ["new", "investigating", "need-info", "fixed-pending-release", "released", "wontfix", "not-bug", "duplicate", "guide"];
 const PORTAL = "https://discord.com/developers/applications";
 
 let LANG = "en";
 let KEY = "";
-let PAGE = "dashboard";
+let THEME = "light";
+let PAGE = "inbox";
+let FORUM = "";                  // the forum the inbox is narrowed to, if any
 let STATUS = null;
+let SIDE_SHOWN = "";             // what the sidebar last drew
 let RENDER_SEQ = 0;
 let POLL = null;                 // timer of the running AI review, if any
-let SEEN_JOB = "";               // the review job this page has watched
-const HOWTO_HIDDEN = {};         // pages whose strip was dismissed (kept even when storage is blocked)
+const HOWTO_HIDDEN = {};         // pages whose strip was opened or closed (kept even when storage is blocked)
 let SPACES = null;               // /api/workspaces when SWLink has more than one server folder
 const $ = (id) => document.getElementById(id);
 
@@ -58,6 +58,35 @@ function h(tag, props, ...kids) {
   if (pending !== undefined) el.value = pending;
   return el;
 }
+/* line icons: fixed markup written here, never text from a server or a user */
+const ICONS = {
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/>',
+  bug: '<path d="m8 2 1.9 1.9"/><path d="M14.1 3.9 16 2"/><path d="M9 7.1V6a3 3 0 1 1 6 0v1.1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6Z"/><path d="M12 20v-9"/><path d="M6.5 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/>',
+  idea: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>',
+  heart: '<path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.500c0 2.3 1.5 4 3 5.500l7 7Z"/>',
+  model: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  persona: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  settings: '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
+  side: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.3 17.7-1.4 1.4"/><path d="m19.1 4.9-1.4 1.4"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 15-6.700L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.700L3 16"/><path d="M8 16H3v5"/>',
+  spark: '<path d="M9.9 15.500A2 2 0 0 0 8.5 14.100L2.4 12.500a.5.5 0 0 1 0-1l6.1-1.600a2 2 0 0 0 1.4-1.400l1.6-6.100a.5.5 0 0 1 1 0l1.6 6.100a2 2 0 0 0 1.4 1.400l6.1 1.600a.5.5 0 0 1 0 1l-6.1 1.600a2 2 0 0 0-1.4 1.400l-1.6 6.100a.5.5 0 0 1-1 0Z"/>',
+  out: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  star: '<path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.200L5.8 21 7 14.2 2 9.300l6.9-1z"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+};
+function icon(name, cls) {
+  const doc = new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + "</svg>", "image/svg+xml");
+  const svg = document.importNode(doc.documentElement, true);
+  svg.setAttribute("class", "i" + (cls ? " " + cls : ""));
+  return svg;
+}
+function cat() { return h("img", { class: "cat", src: "/swlink.svg", alt: "" }); }
 function trashIcon() {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -81,10 +110,11 @@ function lockIcon() {
 }
 function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
 
-function toast(msg, bad) {
-  const el = h("div", { class: "toast" + (bad ? " err" : "") }, msg);
+function toast(msg, bad, action) {
+  const el = h("div", { class: "toast" + (bad ? " err" : "") }, msg,
+    action ? h("button", { onclick: () => { el.remove(); action.run(); } }, action.label) : null);
   $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), bad ? 6000 : 3000);
+  setTimeout(() => el.remove(), bad ? 6000 : action ? 6000 : 3000);
 }
 function fail(e) {
   if (e && e.message === "locked") return;
@@ -141,7 +171,7 @@ function modeLabel(m) { return t("mode." + m); }
 function modeSelect(value, onchange) {
   return h("select", { value, onchange: (e) => onchange(e.target.value) }, MODES.map((m) => h("option", { value: m }, modeLabel(m))));
 }
-function empty(title, text, btn) { return h("div", { class: "card empty" }, h("h3", null, title), h("div", null, text), btn); }
+function empty(title, text, btn) { return h("div", { class: "card empty" }, cat(), h("h3", null, title), h("div", null, text), btn); }
 function go(page) { location.hash = "#/" + page; }
 function goBtn(page, label, primary) { return h("button", { class: "btn" + (primary === false ? "" : " primary"), onclick: () => go(page) }, label); }
 // 「润色」: the model rewrites what you typed in the box; 「撤回」 puts your words back until you type again
@@ -163,37 +193,61 @@ function polishButtons(ta, extra, small) {
 }
 function field(label, input) { return h("label", { class: "field" }, h("span", null, label), input); }
 function fieldHint(label, input, hint) { return h("label", { class: "field" }, h("span", null, label), input, h("div", { class: "sub small-text hint" }, hint)); }
-function statusLabel(s) { return hasKey("forum.st." + s) ? t("forum.st." + s) : s; }
-function sevBadge(s) { return s ? h("span", { class: "badge sev-" + s }, t("sev." + s)) : null; }
 function stopPolling() { if (POLL) { clearInterval(POLL); POLL = null; } }
 
 /* ---------- shell ---------- */
 function renderShell() {
-  const main = document.querySelector(".main");
-  if (main) main.classList.toggle("fill", PAGE === "conversations");      // the chat page uses the whole window height
-  const side = clear($("side"));
-  side.appendChild(h("div", { class: "brand" }, h("img", { src: "/swlink.svg", alt: "" }), h("span", null, "SWLink")));
-  const sp = spacePicker();
-  if (sp) side.appendChild(sp);
-  for (const [gk, pages] of NAV) {
-    side.appendChild(h("div", { class: "nav-group" }, t(gk)));
-    for (const p of pages) side.appendChild(h("button", { class: "nav-item" + (p === PAGE ? " active" : ""), onclick: () => go(p) }, t("nav." + p)));
-  }
-  side.appendChild(h("div", { class: "side-foot" }, "v" + ((STATUS && STATUS.version) || "")));
-  renderTop();
+  $("page").classList.toggle("fill", PAGE === "conversations");      // the chat page uses the whole window height
+  $("page").classList.remove("inbox");
+  renderSide();
   renderDemo();
   renderHowto();
 }
-/* server picker: workspace folders of this bot ([swlink] workspaces) re-render every page; SWLinks of other bots
-   ([swlink] others) open in this tab (started first when they are not running) */
-function spacePicker() {
-  if (!SPACES || (SPACES.items.length < 2 && !SPACES.broken.length)) return null;
-  const sel = h("select", { class: "space-select", "aria-label": t("ws.label"), onchange: (ev) => openSpace(ev.target.value) },
+function navItem(id, ic, label, active, onclick, count) {
+  return h("button", { class: "nav-item" + (active ? " active" : ""), onclick },
+    icon(ic), h("span", { class: "grow" }, label), count === undefined ? null : h("em", { class: count ? "" : "zero" }, String(count)));
+}
+function renderSide() {
+  const side = clear($("side"));
+  const inbox = (STATUS && STATUS.inbox) || { todo: 0, forums: [] };
+  const page = (p) => navItem(p, NAV_ICON[p], t("nav." + p), p === PAGE || (p === "settings" && UNDER_SETTINGS.includes(PAGE) && !optional().includes(PAGE)), () => go(p),
+    p === "approvals" ? (STATUS && STATUS.waiting) || 0 : undefined);
+  side.appendChild(h("div", { class: "brand" }, cat(), h("b", null, "SWLink")));
+  side.appendChild(h("div", { class: "nav-group" }, t("nav.feedback")));
+  side.appendChild(navItem("all", "inbox", t("nav.inbox"), PAGE === "inbox" && !FORUM, () => go("inbox"), inbox.todo));
+  inbox.forums.forEach((f) => side.appendChild(navItem(f.id, KIND_ICON[forumKind(f.name)], forumName(f), PAGE === "inbox" && FORUM === f.id, () => go("inbox/" + f.id), f.todo)));
+  const extra = optional();
+  if (extra.length) {
+    side.appendChild(h("div", { class: "nav-group" }, t("nav.bot")));
+    extra.forEach((p) => side.appendChild(page(p)));
+  }
+  side.appendChild(h("div", { class: "nav-group" }, t("nav.system")));
+  ["llm", "agents", "settings"].forEach((p) => side.appendChild(page(p)));
+  side.appendChild(serverFoot());
+}
+/* chat, supporters and waiting replies only show where this server uses them; Settings always leads to all of them */
+function optional() {
+  const s = STATUS || {};
+  return [s.chat ? "conversations" : null, s.supporters ? "supporters" : null, s.waiting ? "approvals" : null].filter(Boolean);
+}
+/* the bottom row: this server and its bot. Server folders of this bot ([swlink] workspaces) re-render every page;
+   SWLinks of other bots ([swlink] others) open in this tab (started first when they are not running) */
+function serverFoot() {
+  const b = (STATUS && STATUS.bot) || { state: "offline", reason: "" };
+  const name = (STATUS && STATUS.server) || "SWLink";
+  const who = h("span", { class: "foot-who" }, h("b", null, name),
+    h("small", null, h("span", { class: "dot " + b.state }), (b.bot_name ? b.bot_name + " " : "") + t("bot." + b.state)));
+  const avatar = h("span", { class: "foot-avatar" }, cat());
+  if (!SPACES || (SPACES.items.length < 2 && !SPACES.broken.length)) {
+    return h("button", { class: "foot", title: botHint(b), onclick: () => go("settings") }, avatar, who);
+  }
+  const sel = h("select", { "aria-label": t("ws.label"), onchange: (ev) => openSpace(ev.target.value) },
     SPACES.items.map((w) => h("option", { value: w.id, selected: w.current },
       w.name + (w.home ? t("ws.home") : "") + (w.other && !w.running ? t("ws.off") : ""))));
-  const box = h("div", { class: "space" }, h("div", { class: "nav-group" }, t("ws.label")), sel);
-  for (const b of SPACES.broken) box.appendChild(h("div", { class: "sub small-text space-broken", title: b.error }, t("ws.broken", { f: b.folder })));
-  return box;
+  const box = h("label", { class: "foot", title: t("ws.label") + " · " + botHint(b) }, avatar, who, sel);
+  const wrap = h("div", { class: "foot-wrap" }, box);
+  SPACES.broken.forEach((x) => wrap.prepend(h("div", { class: "small-text space-broken", title: x.error }, t("ws.broken", { f: x.folder }))));
+  return wrap;
 }
 async function loadSpaces() {
   try { SPACES = await api("GET", "/api/workspaces"); } catch (e) { SPACES = null; }
@@ -204,6 +258,7 @@ async function openSpace(id) {
     SPACES = await api("POST", "/api/workspaces/" + encodeURIComponent(id) + "/open", {});
     const w = SPACES.items.find((x) => x.current);
     if (w) toast(t("ws.opened", { n: w.name }));
+    FB.sel = null;
     await refreshStatus();
   } catch (e) { fail(e); }
   renderPage();
@@ -241,37 +296,57 @@ function botHint(b) {
 }
 function renderTop() {
   const top = clear($("top"));
-  const b = (STATUS && STATUS.bot) || { state: "offline", reason: "" };
-  const running = b.state === "online" || b.state === "connecting";
-  top.appendChild(h("div", null, h("h1", null, t("nav." + PAGE)), h("div", { class: "sub" }, t("sub." + PAGE))));
-  const here = SPACES && SPACES.items.length > 1 ? SPACES.items.find((w) => w.current) : null;
-  top.appendChild(h("div", { class: "top-right" },
-    here ? h("span", { class: "pill space-pill", title: t("ws.label") }, here.name) : null,
-    h("span", { class: "pill " + b.state, title: botHint(b) }, h("span", { class: "dot" }), t("bot." + b.state)),
-    h("button", { class: "btn small " + (running ? "" : "primary"), onclick: toggleBot }, running ? t("bot.stop") : t("bot.start")),
-    h("button", { class: "help", title: t("howto.show"), "aria-label": t("howto.show"), onclick: toggleHowto }, "?"),
-    h("button", { class: "lang", onclick: toggleLang }, LANG === "zh" ? "EN" : "中")));
+  const search = h("input", { id: "search", placeholder: t("fb.search"), "aria-label": t("fb.search"), value: FB.q, oninput: (e) => {
+    FB.q = e.target.value.trim();
+    if (PAGE !== "inbox") { go("inbox"); return; }
+    if (FB.doms) { drawInbox(); drawRight(); }
+  } });
+  top.append(
+    h("button", { class: "ghost", "aria-label": t("top.side"), title: t("top.side"), onclick: () => {
+      $("app").classList.toggle(innerWidth <= 860 ? "menu" : "collapsed");
+    } }, icon("side")),
+    h("span", { class: "topcat" }, cat()),
+    h("span", { class: "sep" }),
+    h("label", { class: "search" }, icon("search"), search),
+    h("button", { class: "ghost lang", title: t("top.lang"), onclick: toggleLang }, LANG === "zh" ? "EN" : "中"),
+    h("button", { class: "square", "aria-label": t("top.theme"), title: t("top.theme"), onclick: toggleTheme }, icon(THEME === "dark" ? "sun" : "moon")));
+}
+function setHead(title, sub, right) {
+  const head = clear($("head"));
+  const parent = UNDER_SETTINGS.includes(PAGE) && !optional().includes(PAGE)
+    ? h("button", { class: "up", onclick: () => go("settings") }, icon("back"), t("nav.settings")) : null;
+  head.append(h("div", null, parent, h("h1", null, title), typeof sub === "string" ? h("p", null, sub) : sub), h("div", { class: "head-right" }, right));
+}
+function toggleTheme() {
+  THEME = THEME === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = THEME;
+  store("setL", "swlink.theme", THEME);
+  renderTop();
 }
 
-/* "How to use" strip: 2 to 3 numbered steps per page. Dismissal is remembered in localStorage (inside try/catch). */
+/* "How to use" strip: 2 to 3 numbered steps per page, shown from the ? button. The choice stays in localStorage (inside try/catch). */
 function howtoKey(page) { return "swlink.howto." + page; }
 function howtoHidden(page) {
   if (HOWTO_HIDDEN[page] !== undefined) return HOWTO_HIDDEN[page];
-  try { return localStorage.getItem(howtoKey(page)) === "1"; } catch (e) { return false; }
+  try { return localStorage.getItem(howtoKey(page)) !== "0"; } catch (e) { return true; }
 }
 function setHowtoHidden(page, hidden) {
   HOWTO_HIDDEN[page] = hidden;
-  try { if (hidden) localStorage.setItem(howtoKey(page), "1"); else localStorage.removeItem(howtoKey(page)); } catch (e) { /* blocked */ }
+  try { if (!hidden) localStorage.setItem(howtoKey(page), "0"); else localStorage.removeItem(howtoKey(page)); } catch (e) { /* blocked */ }
+}
+function howtoSteps(page) {
+  const steps = [];
+  for (let i = 1; hasKey("howto." + page + "." + i); i++) steps.push(t("howto." + page + "." + i));
+  return steps;
 }
 function renderHowto() {
   const box = clear($("howto"));
   if (howtoHidden(PAGE)) return;
-  const steps = [];
-  for (let i = 1; hasKey("howto." + PAGE + "." + i); i++) steps.push(t("howto." + PAGE + "." + i));
+  const steps = howtoSteps(PAGE);
   if (!steps.length) return;
   box.appendChild(h("div", { class: "howto" },
     h("div", { class: "howto-head" }, h("strong", null, t("howto.title")),
-      h("button", { class: "btn small", onclick: () => { setHowtoHidden(PAGE, true); renderHowto(); } }, t("howto.hide"))),
+      h("button", { class: "textbtn", onclick: () => { setHowtoHidden(PAGE, true); renderHowto(); } }, t("howto.hide"))),
     h("ol", { class: "howto-steps" }, steps.map((s) => h("li", null, s)))));
 }
 function toggleHowto() { setHowtoHidden(PAGE, !howtoHidden(PAGE)); renderHowto(); }
@@ -279,38 +354,40 @@ function toggleHowto() { setHowtoHidden(PAGE, !howtoHidden(PAGE)); renderHowto()
 async function toggleBot() {
   const running = STATUS && STATUS.bot && (STATUS.bot.state === "online" || STATUS.bot.state === "connecting");
   try { await api("POST", "/api/bot/" + (running ? "stop" : "start")); await refreshStatus(); } catch (e) { fail(e); }
-  setTimeout(() => refreshStatus().catch(() => {}), 1500);
+  setTimeout(() => { refreshStatus().then(() => { if (PAGE === "settings") renderPage(); }).catch(() => {}); }, 1500);
 }
 function toggleLang() {
   LANG = LANG === "zh" ? "en" : "zh";
   store("setL", "swlink.lang", LANG);
   document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
-  renderShell();
+  renderTop();
   renderPage();
 }
 async function refreshStatus() {
   STATUS = await api("GET", "/api/status");
-  if (STATUS.workspaces > 1) {
-    const before = JSON.stringify(SPACES);
-    await loadSpaces();
-    if (JSON.stringify(SPACES) !== before) renderShell();   // only on a real change: a rebuilt <select> closes itself
-  }
-  renderTop();
+  if (STATUS.workspaces > 1) await loadSpaces();
+  const shown = JSON.stringify([STATUS.inbox, STATUS.chat, STATUS.waiting, STATUS.supporters && 1, STATUS.server, STATUS.bot.state, STATUS.bot.bot_name, SPACES, PAGE, FORUM, LANG]);
+  if (shown !== SIDE_SHOWN) { SIDE_SHOWN = shown; renderSide(); }   // only on a real change: a rebuilt <select> closes itself
   renderDemo();
-  const v = document.querySelector(".side-foot");
-  if (v) v.textContent = "v" + STATUS.version;
   return STATUS;
 }
 
 function pageFromHash() {
-  const m = /^#\/([a-z]+)/.exec(location.hash);
-  return m && m[1] in PAGES ? m[1] : "dashboard";
+  const m = /^#\/([a-z]+)(?:\/(\d+))?/.exec(location.hash);
+  FORUM = m && m[1] === "inbox" && m[2] ? m[2] : "";
+  return m && m[1] in PAGES ? m[1] : "inbox";
 }
 async function renderPage() {
   const seq = ++RENDER_SEQ;
   stopPolling();
+  keepDraft();
+  FB.doms = null;
   PAGE = pageFromHash();
+  $("app").classList.remove("menu", "reading");
   renderShell();
+  const helpBtn = howtoSteps(PAGE).length && !NO_HOWTO.includes(PAGE)
+    ? h("button", { class: "ghost", title: t("howto.show"), "aria-label": t("howto.show"), onclick: toggleHowto }, "?") : null;
+  setHead(t("nav." + PAGE), t("sub." + PAGE), helpBtn);
   const view = clear($("view"));
   view.appendChild(h("div", { class: "muted" }, t("common.loading")));
   try {
@@ -320,31 +397,347 @@ async function renderPage() {
   } catch (e) { if (seq === RENDER_SEQ) { clear(view); fail(e); } }
 }
 
-/* ---------- dashboard ---------- */
-async function pageDashboard() {
-  const s = await refreshStatus();
-  const metric = (label, value, note) => h("div", { class: "card metric" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), note ? h("div", { class: "note" }, note) : null);
-  const item = (n, ok, title, why, action, optional) => h("li", { class: "todo" },
-    h("span", { class: "tick" + (ok ? " on" : "") }, ok ? "✓" : String(n)),
-    h("div", { class: "grow" }, h("div", null, title, optional ? h("span", { class: "badge idle opt" }, t("common.optional")) : null), h("div", { class: "sub small-text" }, why)),
-    ok ? null : action);
-  const online = s.bot.state === "online";
-  const portal = h("a", { class: "btn small", href: PORTAL, target: "_blank", rel: "noopener noreferrer" }, t("dash.openPortal"));
-  const metrics = [
-    metric(t("dash.status"), t("bot." + s.bot.state), s.bot.reason ? botHint(s.bot) : (s.llm ? t("dash.model") + ": " + s.llm.name + " · " + s.llm.model : t("dash.nomodel"))),
-    metric(t("dash.servers"), String(s.guilds)), metric(t("dash.pending"), String(s.pending)), metric(t("dash.auto"), String(s.auto_today))];
-  if (s.forum_configured) metrics.push(metric(t("dash.toreview"), String(s.forum_to_review)));
-  if (s.supporters) metrics.push(metric(t("dash.supporters"), String(s.supporters.claims), s.supporters.retries ? t("dash.supNote", { n: s.supporters.retries }) : null));
-  return h("div", null,
-    h("div", { class: "metrics" }, metrics),
-    h("div", { class: "card" }, h("h2", null, t("dash.start")),
-      h("ul", { class: "checklist" },
-        item(1, s.checklist.token, t("dash.c1"), t("dash.c1w"), goBtn("settings", t("dash.go"), false)),
-        item(2, s.checklist.llm, t("dash.c2"), t("dash.c2w"), goBtn("llm", t("dash.goModels"), false)),
-        item(3, online, t("dash.c3"), t("dash.c3w"), portal),
-        item(4, s.checklist.rule, t("dash.c4"), t("dash.c4w"), goBtn("rules", t("dash.goRules"), false)),
-        item(5, s.forum_configured, t("dash.c5"), t("dash.c5w"), goBtn("settings", t("dash.go"), false), true))));
+/* ---------- the feedback inbox: every forum in one list; you read, reply and move on ---------- */
+const FB = { data: null, view: "todo", sel: null, q: "", drafts: {}, chosen: {}, hideAi: {}, busy: null, pulled: {}, seq: 0, job: "", doms: null, undoable: null };
+
+function forumKind(name) {
+  if (/bug|错误|报错|故障|问题/i.test(name)) return "bug";
+  if (/想法|建议|意见|idea|suggest|feature|request/i.test(name)) return "idea";
+  return "other";
 }
+const KIND_ICON = { bug: "bug", idea: "idea", other: "image" };
+function forumOf(id) { return (FB.data && FB.data.forums.find((f) => f.id === id)) || { id, name: "", tags: [], agent: "auto" }; }
+function forumName(f) { return f.name || t("fb.forum"); }
+function relTime(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const min = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (min < 1) return t("time.now");
+  if (min < 60) return t("time.min", { n: min });
+  if (min < 1440) return t("time.hour", { n: Math.floor(min / 60) });
+  if (min < 2880) return t("time.yesterday");
+  return t("time.day", { n: Math.floor(min / 1440) });
+}
+function spendText(sp) { return sp.complete ? "$" + sp.cost.toFixed(sp.cost < 1 ? 3 : 2) : t("fb.calls", { n: sp.calls }); }
+function fbItems() {
+  const q = FB.q.toLowerCase();
+  return FB.data.items.filter((p) => (!FORUM || p.forum === FORUM)
+    && (!q || (p.title + " " + p.preview + " " + p.author).toLowerCase().includes(q)));
+}
+function fbShown() { return fbItems().filter((p) => p.state === FB.view); }
+
+async function pageInbox() {
+  $("page").classList.add("fill", "inbox");
+  FB.data = await api("GET", "/api/feedback");
+  const refresh = h("button", { class: "btn primary", onclick: () => pull(true) }, icon("refresh"), h("span", null, t("fb.refresh")));
+  const f = FORUM ? forumOf(FORUM) : null;
+  const sub = h("p");
+  setHead(f ? forumName(f) : t("nav.inbox"), sub, refresh);
+  const D = FB.doms = { sub, stats: h("div", { class: "stats" }), seg: h("div", { class: "seg" }), bulk: h("div", { class: "bulk hidden" }),
+    list: h("div", { class: "list" }), right: h("div", { class: "fdetail" }), refresh };
+  const bulkBtn = h("button", { class: "textbtn", onclick: showBulk }, icon("spark"), t("fb.bulk"));
+  if (FB.sel === null || !fbShown().some((p) => p.id === FB.sel)) FB.sel = (fbShown()[0] || { id: null }).id;
+  drawInbox();
+  drawRight();
+  if (!FB.pulled[STATUS && STATUS.server || ""]) pull(false);
+  return h("div", { class: "inbox-wrap col grow" }, D.stats,
+    h("div", { class: "work" },
+      h("div", { class: "col listcol" }, h("div", { class: "bar" }, D.seg, bulkBtn), D.bulk, D.list),
+      D.right));
+}
+
+function drawInbox() {
+  const D = FB.doms;
+  if (!D) return;
+  const scope = fbItems(), left = scope.filter((p) => p.state === "todo").length;
+  D.sub.textContent = (left ? t("fb.left", { n: left }) : t("fb.allDone")) + (FB.data.synced_at ? " · " + t("fb.pulledAt", { t: relTime(FB.data.synced_at) }) : "");
+  const stat = (ic, label, value, cls) => h("div", { class: "stat" }, h("span", null, icon(ic), label), h("b", { class: cls || "" }, String(value)));
+  clear(D.stats).append(stat("inbox", t("fb.stat.todo"), left), stat("spark", t("fb.stat.drafts"), scope.filter((p) => p.state === "todo" && p.has_draft).length),
+    stat("check", t("fb.stat.today"), FB.data.handled_today, "g"), stat("model", t("fb.stat.spend"), spendText(FB.data.spend)));
+  clear(D.seg);
+  [["todo", t("fb.todo") + " " + left], ["done", t("fb.done") + " " + (scope.length - left)]].forEach(([v, label]) =>
+    D.seg.appendChild(h("button", { class: FB.view === v ? "on" : "", onclick: () => setView(v) }, label)));
+  drawList();
+}
+function setView(v) {
+  keepDraft();
+  FB.view = v;
+  FB.sel = (fbShown()[0] || { id: null }).id;
+  drawInbox();
+  drawRight();
+}
+function catEmpty(text) { return h("div", { class: "empty grow" }, cat(), h("span", null, text)); }
+function drawList() {
+  const D = FB.doms, items = fbShown();
+  clear(D.list);
+  if (!items.length) {
+    D.list.appendChild(catEmpty(FB.q ? t("fb.noMatch") : FB.view === "todo" ? (FB.data.items.length ? t("fb.allRead") : emptyHint()) : t("fb.noneDone")));
+    return;
+  }
+  items.forEach((p) => {
+    const f = forumOf(p.forum), kind = forumKind(f.name);
+    D.list.appendChild(h("button", { class: "post" + (p.id === FB.sel ? " on" : "") + (p.state === "done" ? " done" : ""), onclick: () => selectPost(p.id) },
+      h("span", { class: "tile " + kind }, icon(KIND_ICON[kind])),
+      h("span", { class: "post-body" },
+        h("span", { class: "post-t" }, h("b", null, p.title),
+          p.fresh ? h("span", { class: "chip new" }, t("fb.fresh." + p.fresh)) : null,
+          p.has_draft && p.state === "todo" ? h("span", { class: "chip draft" }, t("fb.hasDraft")) : null),
+        h("span", { class: "post-s" }, p.preview),
+        h("span", { class: "post-m" }, [forumName(f), p.author, relTime(p.time)].filter(Boolean).join(" · ")))));
+  });
+}
+function emptyHint() {
+  if (!FB.data.can_pull) return t("fb.noServer");
+  return FB.data.forums.length ? t("fb.nothingYet") : t("fb.noForums");
+}
+function keepDraft() { const box = $("reply"); if (box && FB.sel) FB.drafts[FB.sel] = box.value; }
+function selectPost(id, stay) {
+  keepDraft();
+  FB.sel = id;
+  if (!stay) $("app").classList.add("reading");
+  drawList();
+  drawRight();
+  const row = FB.doms.list.querySelector(".post.on");
+  if (row && row.scrollIntoViewIfNeeded) row.scrollIntoViewIfNeeded(false);
+}
+function nextAfter(id) {
+  const items = fbShown(), i = items.findIndex((p) => p.id === id);
+  const rest = items.filter((p) => p.id !== id);
+  return rest[i] || rest[i - 1] || null;
+}
+
+async function drawRight() {
+  const D = FB.doms, seq = ++FB.seq;
+  if (!D) return;
+  const id = FB.sel;
+  if (!id || !fbShown().some((p) => p.id === id)) {
+    clear(D.right).appendChild(catEmpty(FB.data.items.some((p) => p.state === "todo") ? t("fb.pick") : t("fb.allRead")));
+    $("app").classList.remove("reading");
+    return;
+  }
+  let d;
+  try { d = await api("GET", "/api/feedback/" + id); } catch (e) { fail(e); return; }
+  if (seq !== FB.seq) return;
+  const f = forumOf(d.forum);
+  const botName = (STATUS && STATUS.bot && STATUS.bot.bot_name) || t("fb.bot");
+  const pictures = (files) => {
+    const pics = files.filter((x) => x.image), rest = files.filter((x) => !x.image);
+    if (!files.length) return null;
+    return h("div", { class: "shots" }, pics.map((x) => picture(id, x)), rest.map((x) => h("span", { class: "file" }, x.name)));
+  };
+  const say = (who, time, text, me, extra) => h("div", { class: "fmsg" },
+    h("span", { class: "face" + (me ? " bot" : "") }, me ? cat() : (who || "?").slice(0, 1).toUpperCase()),
+    h("div", { class: "fmsg-box" }, h("div", { class: "fmsg-who" }, h("b", null, who), relTime(time)), text ? h("p", null, text) : null, extra));
+  const log = d.log ? h("details", { class: "log", open: d.log_errors > 0 }, h("summary", null, t("fb.log", { n: d.log_errors })), h("pre", null, d.log)) : null;
+  const read = h("div", { class: "read" },
+    h("button", { class: "textbtn back", onclick: () => $("app").classList.remove("reading") }, icon("back"), t("fb.back")),
+    h("div", { class: "dh" }, h("div", null, h("h2", null, d.title), h("div", { class: "dm" }, h("span", null, forumName(f)), d.state === "done" ? h("span", { class: "chip" }, t("fb.done")) : null,
+        d.tags.map((x) => h("span", { class: "chip" }, x)))),
+      d.link ? h("a", { class: "open", href: d.link, target: "_blank", rel: "noopener noreferrer" }, t("fb.discord"), icon("out")) : null),
+    say(d.author, d.created, d.body, false, [pictures(d.files), log]),
+    d.more ? h("div", { class: "muted small-text gap-top" }, t("fb.more", { n: d.more })) : null,
+    d.messages.map((m) => {
+      const edit = m.bot && m.content ? h("button", { class: "link-btn", onclick: () => editBotMessage(id, m, drawRight) }, t("bm.edit")) : null;
+      const node = say(m.bot ? botName : m.author, m.time, m.content, m.bot, pictures(m.files));
+      if (edit) node.querySelector(".fmsg-who").appendChild(edit);
+      return node;
+    }));
+  clear(D.right).append(read, compose(d, f));
+  updateSend(d);
+  if (D.right.dataset.at !== id) { read.scrollTop = read.scrollHeight; D.right.dataset.at = id; }
+}
+
+function picture(tid, x) {
+  const btn = h("button", { class: "shot", title: x.name }, x.name);
+  let src = "";
+  api("GET", "/api/feedback/" + tid + "/file/" + x.i).then((r) => {
+    src = r.data || safeImg(r.url);
+    if (src) clear(btn).appendChild(h("img", { src, alt: x.name }));
+  }).catch(() => { btn.textContent = x.name; });
+  btn.addEventListener("click", () => {
+    if (!src) return;
+    const big = h("button", { class: "bigshot", onclick: () => big.remove() }, h("img", { src, alt: x.name }));
+    document.body.appendChild(big);
+  });
+  return btn;
+}
+
+function chosenTags(d) { return FB.chosen[d.id] || (FB.chosen[d.id] = d.tags.slice()); }
+function tagDiff(d) {
+  const sel = chosenTags(d);
+  return { add: sel.filter((x) => !d.tags.includes(x)), remove: d.tags.filter((x) => !sel.includes(x)) };
+}
+function updateSend(d) {
+  const box = $("reply"), b = $("send");
+  if (!box || !b) return;
+  const diff = tagDiff(d), text = box.value.trim().length > 0;
+  b.disabled = !text && !diff.add.length && !diff.remove.length;
+  b.textContent = !text && (diff.add.length || diff.remove.length) ? t("fb.tagsOnly") : t("fb.send");
+}
+
+function compose(d, f) {
+  const noAi = d.agent === "none";
+  const ai = d.ai && !d.ai_stale && !FB.hideAi[d.id] ? d.ai : null;
+  if (FB.drafts[d.id] === undefined) FB.drafts[d.id] = d.ai && !d.ai_stale && d.state === "todo" ? (d.ai.reply_draft || "") : "";
+  const sel = chosenTags(d);
+  const hints = ai ? (ai.tags_add || []).filter((x) => !sel.includes(x)) : [];
+  const ta = h("textarea", { id: "reply", placeholder: t("fb.placeholder"), "aria-label": t("fb.placeholder"), value: FB.drafts[d.id] });
+  ta.addEventListener("input", () => { FB.drafts[d.id] = ta.value; updateSend(d); });
+  ta.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.ctrlKey) { ev.preventDefault(); sendPost(d); } });
+  const tagRow = d.forum_tags.length ? h("div", { class: "tags" }, d.forum_tags.map((x) => h("button", {
+    class: "tag" + (sel.includes(x) ? " on" : "") + (hints.includes(x) ? " hint" : ""), title: hints.includes(x) ? t("fb.tagHint") : null,
+    onclick: () => { keepDraft(); FB.chosen[d.id] = sel.includes(x) ? sel.filter((y) => y !== x) : sel.concat(x); drawRight(); } }, x))) : null;
+  const aiBox = ai ? h("div", { class: "ai" }, cat(), h("div", { class: "ai-txt" },
+    ai.summary ? h("div", null, h("b", null, t("fb.ai.judge")), ai.summary) : null,
+    ai.likely_cause ? h("div", null, h("b", null, t("fb.ai.cause")), ai.likely_cause) : null,
+    ai.need_info ? h("div", null, h("b", null, t("fb.ai.need")), ai.need_info) : null,
+    h("div", { class: "ai-foot" }, h("span", null, [ai.model, hints.length ? t("fb.ai.hints") : ""].filter(Boolean).join(" · ")),
+      h("button", { class: "textbtn", onclick: () => { keepDraft(); FB.hideAi[d.id] = true; drawRight(); } }, t("fb.ai.hide"))))) : null;
+  const busy = FB.busy === d.id;
+  const [polish, undoPolish] = polishButtons(ta, () => ({ channel: d.id, agent: noAi ? "" : d.agent }));
+  polish.hidden = !ta.value.trim();
+  ta.addEventListener("input", () => { polish.hidden = !ta.value.trim(); });
+  return h("div", { class: "compose" }, aiBox, tagRow, ta, h("div", { class: "acts" },
+    h("button", { class: "btn primary", id: "send", onclick: () => sendPost(d) }, t("fb.send")),
+    d.state === "done" ? h("button", { class: "btn", onclick: () => reopenPost(d) }, t("fb.reopen")) : h("button", { class: "btn", onclick: () => skipPost(d) }, t("fb.skip")),
+    noAi ? null : h("button", { class: "btn", disabled: busy, onclick: () => askAi(d) }, icon("spark"), busy ? t("fb.ai.busy") : (ai ? t("fb.ai.again") : t("fb.ai.go"))),
+    polish, undoPolish, h("span", { class: "grow" }), h("span", { class: "keys" }, t("fb.keys"))));
+}
+
+async function reloadInbox() {
+  FB.data = await api("GET", "/api/feedback");
+  drawInbox();
+  refreshStatus().catch(() => {});
+}
+function finishPost(d, note, undo) {
+  const next = d.state === "todo" ? nextAfter(d.id) : null;
+  delete FB.drafts[d.id]; delete FB.chosen[d.id]; delete FB.hideAi[d.id];
+  if (d.state === "todo") {
+    FB.sel = next ? next.id : null;
+    if (!next) $("app").classList.remove("reading");
+  }
+  toast(note, false, undo);
+  reloadInbox().then(drawRight).catch(fail);
+}
+async function sendPost(d) {
+  const box = $("reply"), b = $("send");
+  if (!box || !b || b.disabled) return;
+  const diff = tagDiff(d);
+  b.disabled = true;
+  try {
+    const r = await api("POST", "/api/feedback/" + d.id + "/send", { text: box.value, add: diff.add, remove: diff.remove });
+    if (r.mismatches && r.mismatches.length) toast(t("fb.mismatch"), true);
+    finishPost(d, t("fb.sent", { f: forumName(forumOf(d.forum)) }));
+  } catch (e) { fail(e); b.disabled = false; }
+}
+async function skipPost(d) {
+  keepDraft();
+  try {
+    await api("POST", "/api/feedback/" + d.id + "/mark", { state: "done" });
+    const kept = { text: FB.drafts[d.id], id: d.id };
+    finishPost(d, t("fb.skipped"), { label: t("fb.undo"), run: async () => {
+      try {
+        await api("POST", "/api/feedback/" + d.id + "/mark", { state: "auto" });
+        FB.drafts[kept.id] = kept.text;
+        FB.sel = kept.id; FB.view = "todo";
+        await reloadInbox(); drawRight();
+      } catch (e) { fail(e); }
+    } });
+  } catch (e) { fail(e); }
+}
+async function reopenPost(d) {
+  try {
+    await api("POST", "/api/feedback/" + d.id + "/mark", { state: "open" });
+    FB.view = "todo"; FB.sel = d.id;
+    await reloadInbox(); drawRight();
+    toast(t("fb.reopened"));
+  } catch (e) { fail(e); }
+}
+async function askAi(d) {
+  if (FB.busy) return;
+  keepDraft();
+  FB.busy = d.id;
+  drawRight();
+  try {
+    const r = await api("POST", "/api/feedback/" + d.id + "/ai", {});
+    FB.drafts[d.id] = r.ai.reply_draft || FB.drafts[d.id] || "";
+    delete FB.hideAi[d.id];
+    FB.data.spend = r.spend;
+    await reloadInbox();
+  } catch (e) { fail(e); }
+  FB.busy = null;
+  if (FB.sel === d.id) drawRight();
+}
+
+async function pull(loud) {
+  const D = FB.doms, key = (STATUS && STATUS.server) || "";
+  FB.pulled[key] = true;
+  if (D) D.refresh.disabled = true;
+  try {
+    const r = await api("POST", "/api/feedback/sync", {});
+    const before = FB.sel;
+    keepDraft();
+    await reloadInbox();
+    if (FB.doms && before && before === FB.sel) drawRight();
+    else if (FB.doms && !FB.sel) { FB.sel = (fbShown()[0] || { id: null }).id; drawInbox(); drawRight(); }
+    if (r.warnings.length) toast(r.warnings.join("；"), true);
+    else if (r.new || r.replies) toast(t("fb.pulled", { n: r.new, m: r.replies }));
+    else if (loud) toast(t("fb.noNews"));
+  } catch (e) {
+    if (e.message !== "pull_busy" && (loud || e.message !== "no_token")) fail(e);
+  } finally { if (D) D.refresh.disabled = false; }
+}
+
+function bulkTargets() {
+  return fbItems().filter((p) => p.state === "todo" && !p.has_draft && forumOf(p.forum).agent !== "none");
+}
+function showBulk() {
+  const el = FB.doms.bulk;
+  if (FB.view !== "todo") setView("todo");
+  const n = bulkTargets().length;
+  el.classList.remove("hidden");
+  clear(el);
+  const close = h("button", { class: "textbtn", onclick: () => el.classList.add("hidden") }, n ? t("common.cancel") : t("common.close"));
+  if (!n) { el.append(h("span", { class: "grow" }, t("fb.bulkNone")), close); return; }
+  if (!FB.data.model) { el.append(h("span", { class: "grow" }, t("fb.noModel")), close); return; }
+  const cost = FB.data.per_post === null ? "" : t("fb.bulkCost", { c: (n * FB.data.per_post).toFixed(3) });
+  el.append(h("span", { class: "grow" }, t("fb.bulkAsk", { m: FB.data.model, n, c: cost })),
+    h("button", { class: "btn primary", onclick: runBulk }, t("fb.bulkGo")), close);
+}
+async function runBulk() {
+  const el = FB.doms.bulk;
+  try {
+    const r = await api("POST", "/api/feedback/review", { forum: FORUM || "" });
+    FB.job = r.job;
+    stopPolling();
+    POLL = setInterval(async () => {
+      try {
+        const st = await api("GET", "/api/forum/review");
+        clear(el);
+        if (st.running) {
+          const stop = h("button", { class: "textbtn", onclick: () => api("POST", "/api/forum/review/stop", {}).catch(fail) }, t("forum.stop"));
+          el.append(h("span", { class: "grow" }, t("fb.bulkRun", { d: st.done, t: st.total, c: st.current })), stop);
+          return;
+        }
+        stopPolling();
+        const shut = h("button", { class: "textbtn", onclick: () => el.classList.add("hidden") }, t("common.close"));
+        el.append(h("span", { class: "grow" }, t("fb.bulkDone", { n: st.reviewed }) + (st.errors.length ? " " + t("fb.bulkErr", { n: st.errors.length, e: st.errors[0].error }) : "")), shut);
+        await reloadInbox();
+        drawRight();
+      } catch (e) { stopPolling(); fail(e); }
+    }, 1000);
+  } catch (e) { fail(e); }
+}
+
+/* ↑↓ moves between posts when you are not typing */
+document.addEventListener("keydown", (e) => {
+  if (PAGE !== "inbox" || !FB.doms || e.target.matches("textarea, select, input")) return;
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const items = fbShown(), i = items.findIndex((p) => p.id === FB.sel);
+  const n = items[i + (e.key === "ArrowDown" ? 1 : -1)];
+  if (n) { e.preventDefault(); selectPost(n.id, true); }
+});
 
 /* ---------- chat ---------- */
 async function pageConversations() {
@@ -527,7 +920,7 @@ async function pageApprovals() {
     toast(t("appr.approvedN", { n: done }) + (errors.length ? " · " + errors.join("; ") : ""), errors.length > 0);
     renderPage();
   }
-  if (!pend.items.length && !appr.items.length && !failed.items.length) return empty(t("appr.empty.title"), t("appr.empty.text"), goBtn("conversations", t("appr.goChat")));
+  if (!pend.items.length && !appr.items.length && !failed.items.length) return empty(t("appr.empty.title"), t("appr.empty.text"), goBtn("inbox", t("appr.goInbox")));
   wrap.appendChild(h("div", { class: "row end" },
     pend.items.length > 1 ? h("button", { class: "btn", onclick: approveAll }, t("appr.approveAll") + " (" + pend.items.length + ")") : null,
     h("button", { class: "btn primary", disabled: !appr.items.length, onclick: sendAll }, t("appr.send") + " (" + appr.items.length + ")")));
@@ -539,223 +932,6 @@ async function pageApprovals() {
     failed.items.forEach((p) => wrap.appendChild(card(p, false, true)));
   }
   return wrap;
-}
-
-/* ---------- bug forum ---------- */
-async function pageForum() {
-  const f = await api("GET", "/api/forum");
-  if (!f.configured) return empty(t("forum.empty.title"), t("forum.empty.text"), goBtn("settings", t("nav.settings")));
-  const st0 = await api("GET", "/api/forum/review");
-  const state = { filter: "all", open: new Set() };
-  const progress = h("div", { class: "card review-box hidden" });
-  const chips = h("div", { class: "chips" });
-  const list = h("div", { class: "threads" });
-  const btnSync = h("button", { class: "btn", onclick: doSync }, t("forum.sync"));
-  const btnReview = h("button", { class: "btn primary", onclick: doReview }, t("forum.review"));
-  const btnExport = h("button", { class: "btn", onclick: doExport }, t("forum.export"));
-  const toolbar = h("div", { class: "toolbar" }, btnSync, btnReview, btnExport, h("span", { class: "grow" }),
-    f.synced_at ? h("span", { class: "muted small-text" }, fmtTime(f.synced_at)) : null);
-
-  async function doSync() {
-    btnSync.disabled = true; toast(t("forum.syncing"));
-    try { const r = await api("POST", "/api/forum/sync", {}); toast(t("forum.synced") + ": " + r.summary.split("\n")[0]); renderPage(); }
-    catch (e) { fail(e); btnSync.disabled = false; }
-  }
-  async function doReview() {
-    if (!f.model) { toast(t("forum.reviewNoModel"), true); return; }
-    const total = f.to_review;
-    if (!total) { toast(t("forum.reviewNothing")); return; }
-    const n = Math.min(total, f.review_limit);
-    const agents = (await api("GET", "/api/agents")).items;
-    const agentSel = h("select", { value: agents.some((a) => a.id === "bug-desk") ? "bug-desk" : "auto" }, agents.map((a) => h("option", { value: a.id }, a.name)));
-    const body = h("div", null, h("div", null, t("forum.reviewText", { n, m: f.model })),
-      total > n ? h("div", { class: "sub small-text" }, t("forum.reviewMore", { n: f.review_limit })) : null,
-      h("div", { class: "gap" }), field(t("forum.reviewAgent"), agentSel));
-    const ok = await new Promise((resolve) => modal(t("forum.reviewTitle"), body, [
-      { label: t("common.cancel"), run: () => { resolve(false); } }, { label: t("forum.reviewGo"), cls: "primary", run: () => { resolve(true); } }]));
-    if (!ok) return;
-    try {
-      const r = await api("POST", "/api/forum/review", { limit: f.review_limit, agent: agentSel.value });
-      SEEN_JOB = r.job;
-      drawProgress(await api("GET", "/api/forum/review"));
-      startPolling();
-    } catch (e) { fail(e); }
-  }
-  async function doExport() {
-    btnExport.disabled = true; toast(t("forum.exporting"));
-    try {
-      const r = await api("POST", "/api/forum/export", {});
-      const pre = h("pre", { class: "preview export" }, r.markdown);
-      modal(t("forum.exportTitle") + " (" + r.count + ")", h("div", null, h("div", { class: "sub small-text" }, t("forum.exportSaved", { p: r.path })), pre), [
-        { label: t("common.copy"), run: async () => {
-          try { await navigator.clipboard.writeText(r.markdown); toast(t("common.copied")); }
-          catch (e) { const sel = window.getSelection(); const range = document.createRange(); range.selectNodeContents(pre); sel.removeAllRanges(); sel.addRange(range); }
-          return false; } },
-        { label: t("common.download"), run: () => {
-          const a = h("a", { href: URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown" })), download: r.filename });
-          document.body.appendChild(a); a.click(); a.remove(); return false; } },
-        { label: t("common.close"), cls: "primary" }], true);
-    } catch (e) { fail(e); } finally { btnExport.disabled = false; }
-  }
-
-  function drawProgress(st) {
-    clear(progress);
-    const show = st.job && (st.running || (st.job === SEEN_JOB) || st.errors.length > 0);
-    progress.classList.toggle("hidden", !show);
-    btnReview.disabled = !!st.running;
-    if (!show) return;
-    if (st.running) {
-      const stopBtn = h("button", { class: "btn small danger", onclick: async () => { stopBtn.disabled = true; try { await api("POST", "/api/forum/review/stop", {}); } catch (e) { fail(e); } } }, t("forum.stop"));
-      progress.appendChild(h("div", { class: "row" }, h("strong", { class: "grow" }, t("forum.progress", { d: st.done, t: st.total })), st.stopped ? h("span", { class: "muted small-text" }, t("forum.stopping")) : stopBtn));
-      progress.appendChild(h("progress", { value: st.done, max: Math.max(st.total, 1) }));
-      if (st.current) progress.appendChild(h("div", { class: "sub small-text" }, t("forum.looking", { c: st.current })));
-    } else {
-      progress.appendChild(h("div", { class: "row" }, h("strong", { class: "grow" }, t(st.stopped ? "forum.reviewStopped" : "forum.reviewDone", { ok: st.reviewed, bad: st.errors.length }))));
-    }
-    if (st.errors.length) {
-      progress.appendChild(h("div", { class: "sub small-text err-title" }, t("forum.errors")));
-      st.errors.forEach((er) => progress.appendChild(h("div", { class: "small-text err-line" }, er.title + ": " + er.error)));
-    }
-  }
-  function startPolling() {
-    stopPolling();
-    POLL = setInterval(async () => {
-      try {
-        const st = await api("GET", "/api/forum/review");
-        drawProgress(st);
-        if (!st.running) { stopPolling(); renderPage(); }
-      } catch (e) { stopPolling(); }
-    }, 1000);
-  }
-
-  function matches(r) {
-    const fl = state.filter;
-    if (fl === "all") return true;
-    if (fl === "review") return r.needs_review;
-    if (fl === "ai") return !!r.ai;
-    return r.status === fl.slice(7);
-  }
-  function drawChips() {
-    clear(chips);
-    const counts = {};
-    f.items.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
-    const chip = (key, label, n) => h("button", { class: "chip" + (state.filter === key ? " active" : ""), onclick: () => { state.filter = key; drawChips(); drawList(); } }, label + " " + n);
-    chips.appendChild(chip("all", t("forum.chip.all"), f.items.length));
-    chips.appendChild(chip("review", t("forum.chip.review"), f.items.filter((r) => r.needs_review).length));
-    chips.appendChild(chip("ai", t("forum.chip.ai"), f.items.filter((r) => r.ai).length));
-    STATUSES.filter((s) => counts[s]).forEach((s) => chips.appendChild(chip("status:" + s, statusLabel(s), counts[s])));
-  }
-  function drawList() {
-    clear(list);
-    const rows = f.items.filter(matches);
-    if (!rows.length) { list.appendChild(h("div", { class: "muted pad" }, f.items.length ? t("forum.nomatch") : t("forum.none"))); return; }
-    rows.forEach((r) => list.appendChild(threadCard(r)));
-  }
-  function threadCard(r) {
-    const body = h("div", { class: "thread-body" + (state.open.has(r.id) ? "" : " hidden") });
-    const card = h("div", { class: "card thread" });
-    let loaded = false;
-    async function load() {
-      if (loaded) return;
-      loaded = true;
-      clear(body).appendChild(h("div", { class: "muted" }, t("common.loading")));
-      try { clear(body).appendChild(detailPanel(await api("GET", "/api/forum/" + r.id), r)); } catch (e) { loaded = false; clear(body); fail(e); }
-    }
-    const head = h("button", { class: "thread-head", onclick: () => {
-      if (state.open.has(r.id)) { state.open.delete(r.id); body.classList.add("hidden"); } else { state.open.add(r.id); body.classList.remove("hidden"); load(); }
-    } },
-      h("span", { class: "flag" + (r.needs_review ? " on" : ""), title: r.needs_review ? t("forum.needsReview") : "" }),
-      h("span", { class: "thread-title" }, r.title),
-      h("span", { class: "thread-meta" },
-        h("span", { class: "badge" }, statusLabel(r.status)),
-        r.cluster || (r.ai && r.ai.cluster) ? h("span", { class: "badge proto" }, r.cluster || r.ai.cluster) : null,
-        r.ai ? sevBadge(r.ai.severity) : null,
-        r.ai ? h("span", { class: "badge idle", title: t("forum.hasAi") }, "AI") : null,
-        h("span", { class: "muted small-text" }, fmtTime(r.last_activity))));
-    card.appendChild(head);
-    if (r.ai && r.ai.summary) card.appendChild(h("div", { class: "thread-sum sub small-text" }, r.ai.summary));
-    card.appendChild(body);
-    if (state.open.has(r.id)) load();
-    return card;
-  }
-
-  function detailPanel(d, row) {
-    const ai = d.ai || {};
-    const st = (d.triage && d.triage.status) || "new";
-    // reporter
-    const replies = d.replies.map((x) => h("div", { class: "reply" + (x.bot ? " bot" : "") },
-      h("div", { class: "who small-text" }, x.author + (x.bot ? " · " + t("forum.bot") : "") + " · " + fmtTime(x.time)),
-      h("div", { class: "txt" }, x.content || (x.attachments.length ? x.attachments.join(", ") : ""))));
-    const reporter = h("div", { class: "pane" }, h("h3", null, t("forum.reporter")),
-      h("div", { class: "who small-text" }, t("forum.by", { a: d.author, t: fmtTime(d.created) })),
-      h("div", { class: "txt" }, d.body || "—"),
-      d.attachments.length ? h("div", { class: "small-text muted" }, d.attachments.join(", ")) : null,
-      d.reply_count ? h("h3", null, t("forum.replies", { n: d.reply_count })) : null,
-      d.reply_count > d.replies.length ? h("div", { class: "small-text muted" }, t("forum.moreReplies", { n: d.replies.length })) : null,
-      replies,
-      d.link ? h("a", { class: "small-text", href: d.link, target: "_blank", rel: "noopener noreferrer" }, t("forum.open")) : null);
-    // AI block
-    const aiPane = h("div", { class: "pane" }, h("h3", null, t("forum.ai")));
-    if (!d.ai) aiPane.appendChild(h("div", { class: "muted" }, t("forum.noAi")));
-    else {
-      if (ai.summary) aiPane.appendChild(h("div", { class: "ai-sum" }, ai.summary));
-      aiPane.appendChild(h("div", { class: "facts" },
-        h("span", null, t("forum.cluster") + ": ", h("b", null, ai.cluster || "—")),
-        h("span", null, t("forum.severity") + ": ", ai.severity ? sevBadge(ai.severity) : "—"),
-        h("span", null, t("forum.status") + ": ", h("b", null, ai.suggest_status ? statusLabel(ai.suggest_status) : "—")),
-        h("span", null, t("forum.confidence") + ": ", h("b", null, Math.round((ai.confidence || 0) * 100) + "%"))));
-      if (ai.duplicate_of) aiPane.appendChild(h("div", { class: "small-text" }, t("forum.dup", { t: ai.duplicate_of.slice(-6) })));
-      if (ai.likely_cause) aiPane.appendChild(h("div", null, h("div", { class: "lbl" }, t("forum.cause")), h("div", { class: "txt" }, ai.likely_cause)));
-      if ((ai.where_to_look || []).length) aiPane.appendChild(h("div", null, h("div", { class: "lbl" }, t("forum.where")), h("div", { class: "codes" }, ai.where_to_look.map((w) => h("code", null, w)))));
-      if (ai.need_info) aiPane.appendChild(h("div", null, h("div", { class: "lbl" }, t("forum.needInfo")), h("div", { class: "txt" }, ai.need_info)));
-      if (ai.images_dropped) aiPane.appendChild(h("div", { class: "small-text muted" }, t("forum.imagesDropped")));
-      aiPane.appendChild(h("div", { class: "small-text muted" }, [ai.model, fmtTime(ai.at)].filter(Boolean).join(" · ")));
-    }
-    // human side: reply draft, tags, triage
-    const draft = h("textarea", { class: "draft", value: ai.reply_draft || "" });
-    const tagsAdd = h("input", { type: "text", list: "tags-" + d.id, value: (ai.tags_add || []).join(", ") });
-    const tagsRem = h("input", { type: "text", list: "tags-" + d.id, value: (ai.tags_remove || []).join(", ") });
-    const dl = h("datalist", { id: "tags-" + d.id }, d.forum_tags.map((x) => h("option", { value: x })));
-    const names = (el) => el.value.split(",").map((x) => x.trim()).filter(Boolean);
-    const stSel = h("select", { value: ai.suggest_status || st }, STATUSES.map((s) => h("option", { value: s }, statusLabel(s))));
-    const clInp = h("input", { type: "text", value: (d.triage && d.triage.cluster) || ai.cluster || "" });
-    const caInp = h("input", { type: "text", value: (d.triage && d.triage.root_cause) || ai.likely_cause || "" });
-    const chk = (checked) => h("input", { type: "checkbox", checked });
-    const cSt = chk(!!ai.suggest_status), cCl = chk(!!ai.cluster), cCa = chk(!!ai.likely_cause);
-    const adoptRow = (box, label, input) => h("label", { class: "adopt-row" }, box, h("span", { class: "adopt-label" }, label), h("span", { class: "grow" }, input));
-    const adoptBtn = h("button", { class: "btn", onclick: async () => {
-      const fields = {};
-      if (cSt.checked) fields.status = stSel.value;
-      if (cCl.checked) fields.cluster = clInp.value;
-      if (cCa.checked) fields.root_cause = caInp.value;
-      adoptBtn.disabled = true;
-      try { await api("POST", "/api/forum/" + d.id + "/adopt", { fields }); toast(t("forum.adopted")); renderPage(); }
-      catch (e) { fail(e); adoptBtn.disabled = false; }
-    } }, t("forum.adopt"));
-    const proposeBtn = h("button", { class: "btn primary", onclick: async () => {
-      if (!draft.value.trim() && !names(tagsAdd).length && !names(tagsRem).length) { toast(t("forum.proposeNone"), true); return; }
-      proposeBtn.disabled = true;
-      try {
-        const r = await api("POST", "/api/forum/" + d.id + "/propose", { text: draft.value, add: names(tagsAdd), remove: names(tagsRem) });
-        toast(t("forum.proposed") + (r.error ? " (" + r.error + ")" : ""), !!r.error);
-      } catch (e) { fail(e); } finally { proposeBtn.disabled = false; }
-    } }, t("forum.propose"));
-    const human = h("div", { class: "pane" },
-      h("div", { class: "lbl" }, t("forum.draft")), draft,
-      h("div", { class: "two" }, field(t("forum.tagsAdd"), tagsAdd), field(t("forum.tagsRemove"), tagsRem)), dl,
-      h("div", { class: "sub small-text" }, t("forum.tagsHint")),
-      h("div", { class: "row end" }, goBtn("approvals", t("forum.goApprovals"), false), ...polishButtons(draft, () => ({ channel: d.id })), proposeBtn),
-      h("h3", null, t("forum.adoptHead")),
-      h("div", { class: "sub small-text" }, t("forum.current") + ": " + statusLabel(st) + (d.triage && d.triage.cluster ? " · " + d.triage.cluster : "") + (d.triage && d.triage.reviewed ? " · " + t("forum.reviewedAt", { t: fmtTime(d.triage.reviewed) }) : "")),
-      adoptRow(cSt, t("forum.status"), stSel), adoptRow(cCl, t("forum.cluster"), clInp), adoptRow(cCa, t("forum.cause"), caInp),
-      h("div", { class: "row end" }, adoptBtn));
-    return h("div", { class: "detail" }, reporter, h("div", { class: "detail-right" }, aiPane, human));
-  }
-
-  drawChips(); drawList();
-  drawProgress(st0);
-  if (st0.running) { SEEN_JOB = st0.job; startPolling(); }
-  return h("div", null, toolbar, progress, chips, list);
 }
 
 /* ---------- bot messages ---------- */
@@ -774,7 +950,7 @@ async function pageBotMsgs() {
     { id: "channels", label: t("bm.channels"), n: chanRows.length,
       opts: () => groups(chanRows, (c) => c.group).map(([g, cs]) => h("optgroup", { label: g }, cs.map((c) => h("option", { value: c.id }, "# " + c.name)))) },
     { id: "forum", label: t("bm.threads"), n: forumRows.length,
-      opts: () => forumRows.map((r) => h("option", { value: r.id }, r.title + " · " + statusLabel(r.status))) },
+      opts: () => forumRows.map((r) => h("option", { value: r.id }, r.title)) },
     { id: "threads", label: t("bm.otherThreads"), n: places.threads.length,
       opts: () => groups(places.threads, (r) => r.guild + " · " + r.parent).map(([g, rs]) => h("optgroup", { label: g }, rs.map((r) => h("option", { value: r.id }, r.name)))) },
     { id: "dms", label: t("bm.dms"), n: places.dms.length,
@@ -1081,112 +1257,136 @@ async function pageSupporters() {
 }
 
 /* ---------- models ---------- */
+let LLM_EDIT = null;          // the profile open on the right, or "new"
 async function pageLLM() {
-  let tab = "profiles";
-  const data = await api("GET", "/api/llm");
-  const presets = (await api("GET", "/api/llm/presets")).items;
-  const box = h("div", null);
-  const tabs = h("div", { class: "tabs" });
-  function drawTabs() {
-    clear(tabs);
-    [["profiles", t("llm.profiles")], ["retry", t("llm.retry")]].forEach(([k, label]) => tabs.appendChild(h("button", { class: "tab" + (tab === k ? " active" : ""), onclick: () => { tab = k; draw(); } }, label)));
+  const [data, presetsRes, spendRes] = await Promise.all([api("GET", "/api/llm"), api("GET", "/api/llm/presets"), api("GET", "/api/feedback")]);
+  const presets = presetsRes.items;
+  if (LLM_EDIT !== "new" && !data.profiles.some((p) => p.id === LLM_EDIT)) LLM_EDIT = data.settings.active || (data.profiles[0] || { id: "new" }).id;
+  if (!data.profiles.length) LLM_EDIT = "new";
+  const right = h("div", { class: "card" });
+  const left = h("div", { class: "card" });
+  const reload = () => renderPage();
+  function statusChip(p) {
+    if (p.status === "ok") return h("span", { class: "chip draft" }, t("llm.ok"));
+    if (p.status === "error") return h("span", { class: "chip new", title: p.last_error }, t("llm.err"));
+    return null;
   }
-  function draw() { drawTabs(); clear(box).appendChild(tab === "profiles" ? profilesView() : retryView()); }
-  function statusBadge(p) {
-    if (p.status === "ok") return h("span", { class: "badge" }, t("llm.ok"));
-    if (p.status === "error") return h("span", { class: "badge err", title: p.last_error }, t("llm.err"));
-    return h("span", { class: "badge idle" }, t("llm.untested"));
-  }
-  function profilesView() {
-    const fb = h("label", { class: "row" }, h("input", { type: "checkbox", checked: data.settings.fallback, onchange: async (e) => { try { data.settings = await api("PUT", "/api/llm/settings", { fallback: e.target.checked }); toast(t("common.saved")); } catch (x) { fail(x); } } }), t("llm.fallback"));
-    const top = h("div", { class: "row end" }, fb, h("button", { class: "btn primary", onclick: newProfile }, t("llm.new")));
-    if (!data.profiles.length) return h("div", null, top, empty(t("llm.empty.title"), t("llm.empty.text"), h("button", { class: "btn primary", onclick: newProfile }, t("llm.new"))));
-    return h("div", null, top, h("div", { class: "grid" }, data.profiles.map((p) => {
+  function drawLeft() {
+    clear(left).append(h("h2", null, t("llm.all")),
+      h("div", { class: "card-hint" }, t("llm.spend", { c: spendText(spendRes.spend) })));
+    data.profiles.forEach((p) => {
       const active = data.settings.active === p.id;
-      return h("div", { class: "card" },
-        h("div", { class: "card-head" }, h("span", { class: "star" + (active ? " on" : "") }, active ? "★" : "☆"), h("span", { class: "name" }, p.name), h("span", { class: "badge proto" }, p.protocol)),
-        h("div", { class: "kv" }, p.model), h("div", { class: "kv" }, p.base_url || "—"),
-        h("div", { class: "kv" }, p.key_set ? "… " + p.key_hint : t("llm.nokey"), " · ", p.calls_s + "/s · " + p.calls_min + "/min"),
-        h("div", { class: "card-actions" }, statusBadge(p),
-          h("button", { class: "btn small", disabled: active, onclick: async () => { try { await api("POST", "/api/llm/" + p.id + "/activate", {}); renderPage(); } catch (e) { fail(e); } } }, active ? t("llm.active") : t("llm.setActive")),
-          h("button", { class: "btn small", onclick: () => editProfile(p) }, t("common.edit")),
-          h("button", { class: "btn small", onclick: async (ev) => { ev.target.disabled = true; toast(t("llm.testing")); try { const r = await api("POST", "/api/llm/" + p.id + "/test", {}); toast(r.ok ? t("llm.testOk", { t: r.text }) : (r.code === "empty_text" ? t("llm.testEmpty") : r.error), !r.ok); renderPage(); } catch (e) { fail(e); ev.target.disabled = false; } } }, t("llm.test")),
-          h("span", { class: "spacer" }),
-          h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => { if (await confirmBox(t("llm.delTitle"), t("llm.delText"), t("common.delete"), true)) { try { await api("DELETE", "/api/llm/" + p.id, {}); renderPage(); } catch (e) { fail(e); } } } }, trashIcon())));
-    })));
+      const star = h("span", { class: "star-btn", role: "button", title: t("llm.setActive"), onclick: async (ev) => {
+        ev.stopPropagation();
+        try { await api("POST", "/api/llm/" + p.id + "/activate", {}); toast(t("llm.switched", { n: p.name })); LLM_EDIT = p.id; reload(); } catch (e) { fail(e); }
+      } }, icon("star", active ? "on" : ""));
+      left.appendChild(h("button", { class: "model" + (p.id === LLM_EDIT ? " on" : ""), onclick: () => { LLM_EDIT = p.id; drawLeft(); drawRight(); } },
+        h("span", { class: "model-r1" }, star, h("b", null, p.name), h("span", { class: "chip" }, p.protocol), active ? h("span", { class: "chip draft" }, t("llm.active")) : null, statusChip(p)),
+        h("small", null, p.model), h("small", null, p.key_set ? "… " + p.key_hint : t("llm.nokey"))));
+    });
+    left.appendChild(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => { LLM_EDIT = "new"; drawLeft(); drawRight(); } }, t("llm.new"))));
+    left.appendChild(h("details", { class: "gap-top" }, h("summary", { class: "sub small-text" }, t("llm.retry")), retryBox()));
   }
-  function retryView() {
+  function retryBox() {
+    const fb = h("label", { class: "row gap-top" }, h("input", { type: "checkbox", checked: data.settings.fallback, onchange: async (e) => { try { data.settings = await api("PUT", "/api/llm/settings", { fallback: e.target.checked }); toast(t("common.saved")); } catch (x) { fail(x); } } }), t("llm.fallback"));
     const retries = h("input", { type: "number", min: "0", max: "5", value: data.settings.retries });
     const timeout = h("input", { type: "number", min: "5", max: "600", value: data.settings.timeout_s });
-    return h("div", { class: "card" }, field(t("llm.retries"), retries), field(t("llm.timeout"), timeout), h("div", { class: "sub small-text" }, t("llm.fallbackNote")),
-      h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: async () => { try { data.settings = await api("PUT", "/api/llm/settings", { retries: +retries.value, timeout_s: +timeout.value }); toast(t("common.saved")); } catch (e) { fail(e); } } }, t("common.save"))));
+    return h("div", null, fb, h("div", { class: "gap" }), field(t("llm.retries"), retries), field(t("llm.timeout"), timeout), h("div", { class: "sub small-text" }, t("llm.fallbackNote")),
+      h("div", { class: "row end gap-top" }, h("button", { class: "btn small", onclick: async () => { try { data.settings = await api("PUT", "/api/llm/settings", { retries: +retries.value, timeout_s: +timeout.value }); toast(t("common.saved")); } catch (e) { fail(e); } } }, t("common.save"))));
   }
-  function newProfile() {
-    const presetSel = h("select", null, presets.map((p) => h("option", { value: p.id }, p.name)));
-    const name = h("input", { type: "text" }), base = h("input", { type: "url", placeholder: "https://" }), model = h("input", { type: "text", list: "model-suggest" });
+  function form(p) {
+    const presetSel = p ? null : h("select", null, presets.map((x) => h("option", { value: x.id }, x.name)));
+    const name = h("input", { type: "text", value: p ? p.name : "" }), base = h("input", { type: "url", value: p ? p.base_url || "" : "", placeholder: "https://" });
     const dl = h("datalist", { id: "model-suggest" });
-    const key = h("input", { type: "password", autocomplete: "off" }), maxTok = h("input", { type: "number", value: "2048", min: "1" });
-    const maxConc = h("input", { type: "number", value: "2", min: "1", max: "16" });
+    const model = h("input", { type: "text", list: "model-suggest", value: p ? p.model : "" });
+    const key = h("input", { type: "password", autocomplete: "off", placeholder: p && p.key_set ? t("llm.keyKeep") : "" });
+    const maxTok = h("input", { type: "number", min: "1", value: String(p ? p.max_tokens || 2048 : 2048) });
+    const maxConc = h("input", { type: "number", min: "1", max: "16", value: String(p ? p.max_concurrent || 2 : 2) });
     const apply = () => {
-      const p = presets.find((x) => x.id === presetSel.value);
-      name.value = p.name; base.value = p.base_url; model.value = p.model;
-      clear(dl); p.models.forEach((m) => dl.appendChild(h("option", { value: m })));
+      const x = presets.find((y) => y.id === presetSel.value);
+      name.value = x.name; base.value = x.base_url; model.value = x.model;
+      clear(dl); x.models.forEach((m) => dl.appendChild(h("option", { value: m })));
     };
-    presetSel.addEventListener("change", apply); apply();
-    const body = h("div", null, field(t("llm.preset"), presetSel), field(t("common.name"), name), field(t("llm.baseUrl"), base), fieldHint(t("llm.model"), model, t("llm.modelHint")), dl,
-      field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), field(t("llm.maxTokens"), maxTok),
-      fieldHint(t("llm.maxConcurrent"), maxConc, t("llm.maxConcurrentHint")),
-      data.keyring ? null : h("div", { class: "badge err" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })));
-    modal(t("common.new"), body, [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
-      const p = presets.find((x) => x.id === presetSel.value);
+    if (presetSel) { presetSel.addEventListener("change", apply); apply(); }
+    const save = async () => {
       try {
-        const r = await api("POST", "/api/llm", { preset: presetSel.value, name: name.value, protocol: p.protocol, base_url: base.value, model: model.value, key: key.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
-        if (r.key_error) toast(r.key_error, true);
-        renderPage();
-      } catch (e) { fail(e); return false; }
-    } }]);
+        if (p) {
+          await api("PUT", "/api/llm/" + p.id, { name: name.value, base_url: base.value, model: model.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
+          if (key.value.trim()) await api("POST", "/api/llm/" + p.id + "/key", { key: key.value.trim() });
+          toast(t("common.saved"));
+        } else {
+          const x = presets.find((y) => y.id === presetSel.value);
+          const r = await api("POST", "/api/llm", { preset: presetSel.value, name: name.value, protocol: x.protocol, base_url: base.value, model: model.value, key: key.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
+          if (r.key_error) toast(r.key_error, true);
+          LLM_EDIT = r.id;
+        }
+        reload();
+      } catch (e) { fail(e); }
+    };
+    const test = p ? h("button", { class: "btn", onclick: async (ev) => {
+      ev.target.disabled = true; toast(t("llm.testing"));
+      try { const r = await api("POST", "/api/llm/" + p.id + "/test", {}); toast(r.ok ? t("llm.testOk", { t: r.text }) : (r.code === "empty_text" ? t("llm.testEmpty") : r.error), !r.ok); reload(); }
+      catch (e) { fail(e); ev.target.disabled = false; }
+    } }, t("llm.test")) : null;
+    const del = p ? h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => {
+      if (await confirmBox(t("llm.delTitle"), t("llm.delText"), t("common.delete"), true)) { try { await api("DELETE", "/api/llm/" + p.id, {}); LLM_EDIT = null; reload(); } catch (e) { fail(e); } }
+    } }, trashIcon()) : null;
+    return h("div", null, h("h2", null, p ? t("common.edit") + "：" + p.name : t("llm.new")),
+      presetSel ? field(t("llm.preset"), presetSel) : null, field(t("common.name"), name), field(t("llm.baseUrl"), base), fieldHint(t("llm.model"), model, t("llm.modelHint")), dl,
+      field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), h("div", { class: "gap" }),
+      h("div", { class: "two" }, field(t("llm.maxTokens"), maxTok), fieldHint(t("llm.maxConcurrent"), maxConc, t("llm.maxConcurrentHint"))),
+      data.keyring ? null : h("div", { class: "badge err warn-line" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })),
+      h("div", { class: "acts" }, h("button", { class: "btn primary", onclick: save }, t("common.save")), test, h("span", { class: "grow" }), del));
   }
-  function editProfile(p) {
-    const name = h("input", { type: "text", value: p.name }), base = h("input", { type: "url", value: p.base_url || "", placeholder: "https://" });
-    const model = h("input", { type: "text", value: p.model }), maxTok = h("input", { type: "number", value: String(p.max_tokens || 2048), min: "1" });
-    const maxConc = h("input", { type: "number", value: String(p.max_concurrent || 2), min: "1", max: "16" });
-    const key = h("input", { type: "password", autocomplete: "off", placeholder: p.key_set ? t("llm.keyKeep") : "" });
-    const body = h("div", null, field(t("common.name"), name), field(t("llm.baseUrl"), base), fieldHint(t("llm.model"), model, t("llm.modelHint")),
-      field(t("llm.key"), key), h("div", { class: "sub small-text" }, t("llm.keyNote")), field(t("llm.maxTokens"), maxTok),
-      fieldHint(t("llm.maxConcurrent"), maxConc, t("llm.maxConcurrentHint")),
-      data.keyring ? null : h("div", { class: "badge err" }, t("llm.nokeyring", { v: "HEARBACK_LLM_KEY_<ID>" })));
-    modal(t("common.edit") + " · " + p.name, body, [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
-      try {
-        await api("PUT", "/api/llm/" + p.id, { name: name.value, base_url: base.value, model: model.value, max_tokens: +maxTok.value, max_concurrent: +maxConc.value });
-        if (key.value.trim()) await api("POST", "/api/llm/" + p.id + "/key", { key: key.value.trim() });
-        renderPage();
-      } catch (e) { fail(e); return false; }
-    } }]);
+  function drawRight() {
+    clear(right).appendChild(form(LLM_EDIT === "new" ? null : data.profiles.find((p) => p.id === LLM_EDIT)));
   }
-  draw();
-  return h("div", null, tabs, box);
+  drawLeft(); drawRight();
+  return h("div", { class: "mgrid" }, left, right);
 }
 
-/* ---------- agents ("人设") ---------- */
+/* ---------- agents ("人设"): which forum uses which, and their words ---------- */
+/* the two built-in agents speak the page's language until someone renames them */
+function agentName(a) {
+  if (a.id === "auto" && a.name === "Auto") return t("agent.auto");
+  if (a.id === "bug-desk" && a.name === "Bug desk") return t("agent.bug");
+  return a.name;
+}
 async function pageAgents() {
-  const [res, llm] = await Promise.all([api("GET", "/api/agents"), api("GET", "/api/llm")]);
+  const [res, llm, fb] = await Promise.all([api("GET", "/api/agents"), api("GET", "/api/llm"), api("GET", "/api/feedback")]);
   function edit(a) {
     const name = h("input", { type: "text", value: a ? a.name : "" }), desc = h("input", { type: "text", value: a ? a.description : "" });
     const prompt = h("textarea", { value: a ? a.system_prompt : "" });
-    prompt.rows = 8;
+    prompt.rows = 12;
     const prof = h("select", { value: a && a.profile_id ? a.profile_id : "" }, h("option", { value: "" }, t("agent.default")), llm.profiles.map((p) => h("option", { value: p.id }, p.name)));
     modal(a ? t("common.edit") : t("agent.new"), h("div", null, field(t("common.name"), name), field(t("agent.desc"), desc), field(t("agent.prompt"), prompt), field(t("agent.llm"), prof)),
       [{ label: t("common.cancel") }, { label: t("common.save"), cls: "primary", run: async () => {
         const body = { name: name.value, description: desc.value, system_prompt: prompt.value, profile_id: prof.value || null };
         try { await api(a ? "PUT" : "POST", "/api/agents" + (a ? "/" + a.id : ""), body); renderPage(); } catch (e) { fail(e); return false; }
-      } }]);
+      } }], true);
   }
-  return h("div", null, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => edit(null) }, t("agent.new"))),
-    h("div", { class: "grid" }, res.items.map((a) => h("div", { class: "card" },
-      h("div", { class: "card-head" }, h("span", { class: "name" }, a.name), h("span", { class: "badge proto" }, a.profile_id || t("agent.default"))),
-      h("div", { class: "kv" }, a.description), h("div", { class: "preview small-text" }, a.system_prompt.slice(0, 160) + (a.system_prompt.length > 160 ? "…" : "")),
-      h("div", { class: "card-actions" }, h("button", { class: "btn small", onclick: () => edit(a) }, t("common.edit")), h("span", { class: "spacer" }),
-        a.id === "auto" ? h("span", { class: "muted small-text" }, t("agent.locked")) : h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => { if (await confirmBox(t("agent.delTitle"), a.name, t("common.delete"), true)) { try { await api("DELETE", "/api/agents/" + a.id, {}); renderPage(); } catch (e) { fail(e); } } } }, trashIcon()))))));
+  const setForum = async (f, body) => {
+    try { await api("PUT", "/api/feedback/forums/" + f.id, body); toast(t("common.saved")); await refreshStatus(); } catch (e) { fail(e); renderPage(); }
+  };
+  const forumRows = fb.forums.map((f) => {
+    const kind = forumKind(f.name);
+    const row = h("div", { class: "srow" + (f.hidden ? " off" : "") });
+    const hide = h("input", { type: "checkbox", checked: f.hidden, onchange: async (e) => { row.classList.toggle("off", e.target.checked); await setForum(f, { hidden: e.target.checked }); } });
+    row.append(h("span", { class: "tile " + kind }, icon(KIND_ICON[kind])),
+      h("div", { class: "grow" }, forumName(f), h("small", null, f.tags.length ? t("agent.tags", { n: f.tags.length }) : t("agent.noTags"))),
+      h("label", { class: "row small-text sub" }, hide, t("agent.hide")),
+      h("select", { value: f.agent, "aria-label": forumName(f), onchange: (e) => setForum(f, { agent: e.target.value }) },
+        res.items.map((a) => h("option", { value: a.id }, agentName(a))), h("option", { value: "none" }, t("agent.none"))));
+    return row;
+  });
+  return h("div", null,
+    h("div", { class: "card" }, h("h2", null, t("agent.forums")), h("div", { class: "card-hint" }, t("agent.forumsHint")),
+      forumRows.length ? forumRows : h("div", { class: "muted" }, t("agent.noForums"))),
+    h("div", { class: "card" }, h("div", { class: "row" }, h("h2", { class: "grow" }, t("agent.all")), h("button", { class: "btn", onclick: () => edit(null) }, t("agent.new"))),
+      res.items.map((a) => h("div", { class: "srow" },
+        h("div", { class: "grow" }, agentName(a), h("small", null, a.description || a.system_prompt.slice(0, 80))),
+        h("button", { class: "btn small", onclick: () => edit(a) }, t("common.edit")),
+        a.id === "auto" ? null : h("button", { class: "icon-btn", title: t("common.delete"), onclick: async () => { if (await confirmBox(t("agent.delTitle"), a.name, t("common.delete"), true)) { try { await api("DELETE", "/api/agents/" + a.id, {}); renderPage(); } catch (e) { fail(e); } } } }, trashIcon())))));
 }
 
 /* ---------- channel rules ---------- */
@@ -1232,10 +1432,29 @@ async function pageLogs() {
       h("div", { class: "sub" }, (e.thread ? e.thread + " " : "") + (e.detail ? JSON.stringify(e.detail) : ""))))));
 }
 
-/* ---------- settings ---------- */
+/* ---------- settings: what is rarely needed ---------- */
 async function pageSettings() {
-  const [s, rr] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/rules")]);
+  const [s, rr, st] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/rules"), refreshStatus()]);
   const rules = rr.rules;
+  const online = st.bot.state === "online", running = online || st.bot.state === "connecting";
+
+  /* first steps, only while something is missing */
+  const item = (n, ok, title, why, action, optional) => h("li", { class: "todo" },
+    h("span", { class: "tick" + (ok ? " on" : "") }, ok ? "✓" : String(n)),
+    h("div", { class: "grow" }, h("div", null, title, optional ? h("span", { class: "badge idle opt" }, t("common.optional")) : null), h("div", { class: "sub small-text" }, why)),
+    ok ? null : action);
+  const portal = h("a", { class: "btn small", href: PORTAL, target: "_blank", rel: "noopener noreferrer" }, t("dash.openPortal"));
+  const setup = !st.checklist.token || !st.checklist.llm || !online ? h("div", { class: "card" }, h("h2", null, t("dash.start")),
+    h("ul", { class: "checklist" },
+      item(1, st.checklist.token, t("dash.c1"), t("dash.c1w")),
+      item(2, st.checklist.llm, t("dash.c2"), t("dash.c2w"), goBtn("llm", t("dash.goModels"), false)),
+      item(3, online, t("dash.c3"), t("dash.c3w"), portal),
+      item(4, st.checklist.rule, t("dash.c4"), t("dash.c4w"), goBtn("rules", t("dash.goRules"), false), true),
+      item(5, !!s.guild_id, t("dash.c5"), t("dash.c5w"), null, true))) : null;
+
+  const row = (title, sub, action) => h("div", { class: "srow" }, h("div", { class: "grow" }, title, sub ? h("small", null, sub) : null), action);
+  const open = (p) => h("button", { class: "btn small", onclick: () => go(p) }, t("set.open"));
+
   const tok = h("input", { type: "password", autocomplete: "off", placeholder: t("set.tokenReplace") });
   const saveTok = h("button", { class: "btn primary", onclick: async () => {
     try { await api("PUT", "/api/settings/token", { token: tok.value }); tok.value = ""; toast(t("set.tokenSaved")); renderPage(); } catch (e) { fail(e); } } }, t("set.tokenSave"));
@@ -1250,24 +1469,53 @@ async function pageSettings() {
     const ok = (v) => !v.trim() || /^\d{17,20}$/.test(v.trim());
     if (!ok(guildInp.value) || !ok(forumInp.value)) { toast(t("set.forumBad"), true); return; }
     try { await api("PUT", "/api/settings/forum", { guild_id: guildInp.value.trim(), forum_id: forumInp.value.trim() }); toast(t("set.forumSaved")); renderPage(); } catch (e) { fail(e); } } }, t("set.forumSave"));
-  return h("div", null,
-    h("div", { class: "card" }, h("h2", null, t("set.token")), h("div", { class: "sub small-text" }, t("set.tokenWhat")),
-      h("div", { class: "row" }, h("span", { class: "badge" + (s.token.set ? "" : " err") }, s.token.set ? t("set.tokenSet") : t("set.tokenNot")), s.token.source === "env" ? h("span", { class: "sub small-text" }, t("set.tokenEnv")) : null),
-      h("div", { class: "row" }, h("div", { class: "grow" }, tok), saveTok)),
-    h("div", { class: "card" }, h("h2", null, t("set.forum")), h("div", { class: "sub small-text" }, t("set.forumWhat")),
-      h("div", { class: "row" }, h("span", { class: "badge" + (s.forum_id ? "" : " err") }, s.forum_id ? t("set.forumSet") : t("set.forumNot"))),
-      h("div", { class: "two" }, field(t("set.guildId"), guildInp), field(t("set.forumId"), forumInp)),
-      h("div", { class: "row end" }, saveForum)),
-    h("div", { class: "card" }, h("h2", null, t("set.dm")), dm, h("div", { class: "sub small-text" }, t("set.cap", { n: s.hourly_cap }))),
-    h("div", { class: "card" }, h("h2", null, t("set.portal")),
-      h("ol", { class: "steps" }, h("li", null, t("set.step1")), h("li", null, t("set.step2")), h("li", null, t("set.step3"))),
-      h("a", { href: s.portal_url, target: "_blank", rel: "noopener noreferrer" }, t("set.openPortal")),
-      h("h2", null, t("set.invite")),
-      s.invite_url ? h("div", null, h("code", null, s.invite_url), h("div", null, h("a", { href: s.invite_url, target: "_blank", rel: "noopener noreferrer" }, t("set.invite")))) : h("div", { class: "muted" }, t("set.inviteHint"))),
-    h("div", { class: "card" }, h("div", { class: "kv" }, t("set.port") + ": " + s.port)));
+  const exportBtn = h("button", { class: "btn small", onclick: async () => {
+    exportBtn.disabled = true;
+    try {
+      const r = await api("POST", "/api/forum/export", {});
+      const pre = h("pre", { class: "preview export" }, r.markdown);
+      modal(t("forum.exportTitle") + " (" + r.count + ")", h("div", null, h("div", { class: "sub small-text" }, t("forum.exportSaved", { p: r.path })), pre), [
+        { label: t("common.copy"), run: async () => {
+          try { await navigator.clipboard.writeText(r.markdown); toast(t("common.copied")); }
+          catch (e) { const sel = window.getSelection(); const range = document.createRange(); range.selectNodeContents(pre); sel.removeAllRanges(); sel.addRange(range); }
+          return false; } },
+        { label: t("common.download"), run: () => {
+          const a = h("a", { href: URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown" })), download: r.filename });
+          document.body.appendChild(a); a.click(); a.remove(); return false; } },
+        { label: t("common.close"), cls: "primary" }], true);
+    } catch (e) { fail(e); } finally { exportBtn.disabled = false; }
+  } }, t("forum.export"));
+
+  return h("div", null, setup,
+    h("div", { class: "card" }, h("h2", null, t("set.bot")),
+      row((st.bot.bot_name || t("fb.bot")) + " · " + t("bot." + st.bot.state), botHint(st.bot),
+        h("button", { class: "btn small" + (running ? "" : " primary"), onclick: toggleBot }, running ? t("bot.stop") : t("bot.start"))),
+      s.welcome_file ? row(t("set.welcome"), t("set.welcomeHint", { p: s.welcome_file })) : null,
+      row(t("set.dm"), t("set.cap", { n: s.hourly_cap }), dm),
+      s.invite_url ? row(t("set.invite"), t("set.inviteWhat"), h("a", { class: "btn small", href: s.invite_url, target: "_blank", rel: "noopener noreferrer" }, t("set.open"))) : null),
+    h("div", { class: "card" }, h("h2", null, t("set.rare")),
+      row(t("nav.conversations"), t("sub.conversations"), open("conversations")),
+      row(t("nav.rules"), t("sub.rules"), open("rules")),
+      row(t("nav.botmsgs"), t("sub.botmsgs"), open("botmsgs")),
+      row(t("nav.approvals"), t("sub.approvals"), open("approvals")),
+      row(t("nav.supporters"), t("sub.supporters"), open("supporters")),
+      row(t("forum.export"), t("set.exportWhat"), exportBtn),
+      row(t("nav.logs"), t("sub.logs"), open("logs"))),
+    h("details", { class: "acc gap-top" }, h("summary", null, t("set.token")),
+      h("div", { class: "acc-body" }, h("div", { class: "sub small-text" }, t("set.tokenWhat")),
+        h("div", { class: "row gap-top" }, h("span", { class: "badge" + (s.token.set ? " ok" : " err") }, s.token.set ? t("set.tokenSet") : t("set.tokenNot")), s.token.source === "env" ? h("span", { class: "sub small-text" }, t("set.tokenEnv")) : null),
+        h("div", { class: "row gap-top" }, h("div", { class: "grow" }, tok), saveTok),
+        h("h3", { class: "gap-top" }, t("set.portal")),
+        h("ol", { class: "steps" }, h("li", null, t("set.step1")), h("li", null, t("set.step2")), h("li", null, t("set.step3"))),
+        h("a", { href: s.portal_url, target: "_blank", rel: "noopener noreferrer" }, t("set.openPortal")))),
+    h("details", { class: "acc" }, h("summary", null, t("set.forum")),
+      h("div", { class: "acc-body" }, h("div", { class: "sub small-text" }, t("set.forumWhat")), h("div", { class: "gap" }),
+        h("div", { class: "two" }, field(t("set.guildId"), guildInp), field(t("set.forumId"), forumInp)),
+        h("div", { class: "row end" }, saveForum))),
+    h("div", { class: "sub small-text gap-top" }, "SWLink v" + s.version + " · " + t("set.port") + " " + s.port));
 }
 
-const PAGES = { dashboard: pageDashboard, conversations: pageConversations, approvals: pageApprovals, forum: pageForum, botmsgs: pageBotMsgs, supporters: pageSupporters, llm: pageLLM, agents: pageAgents, rules: pageRules, logs: pageLogs, settings: pageSettings };
+const PAGES = { inbox: pageInbox, conversations: pageConversations, approvals: pageApprovals, botmsgs: pageBotMsgs, supporters: pageSupporters, llm: pageLLM, agents: pageAgents, rules: pageRules, logs: pageLogs, settings: pageSettings };
 
 /* ---------- boot ---------- */
 function boot() {
@@ -1276,6 +1524,8 @@ function boot() {
   const saved = forced ? forced[1] : store("get", "swlink.lang");
   LANG = saved === "zh" || saved === "en" ? saved : ((navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en");
   document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
+  THEME = store("get", "swlink.theme") === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = THEME;
   const m = /[#&]k=([^&]+)/.exec(location.hash);
   if (m) {
     KEY = decodeURIComponent(m[1]);
@@ -1285,8 +1535,11 @@ function boot() {
   if (!KEY) { showLocked(); return; }
   $("app").classList.remove("hidden");
   window.addEventListener("hashchange", renderPage);
-  refreshStatus().catch(() => {});
-  renderPage();
+  renderTop();
+  refreshStatus().then(() => {
+    if (!STATUS.token_set && !location.hash) go("settings"); else renderPage();
+  }).catch(() => renderPage());
   setInterval(() => { if (!document.hidden) refreshStatus().catch(() => {}); }, 5000);
+  setInterval(() => { if (!document.hidden && PAGE === "inbox" && FB.doms) pull(false); }, 120000);
 }
 boot();

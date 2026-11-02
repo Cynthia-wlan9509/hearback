@@ -231,6 +231,10 @@ the agent-facing MCP surface changes.
 - **Console security**: loopback bind, per-run secret in the launch link (kept in sessionStorage, removed from the
   address bar), Host and Origin checks, JSON-only writes, static files only from the package, a strict CSP, no
   `innerHTML`. The bot token and API keys are write-only through the API.
+- **Feedback inbox** (`feedback.py`, `sync_all`): every forum channel of the server in one list. A post waits until the
+  bot, the owner or an approver has answered and returns when someone else writes; a person can override that with a mark
+  (`triage.inbox`). Send in the inbox is the approval and goes straight through the queue. The model runs only when a person
+  presses an AI button, with the agent chosen per forum (`.hearback/forums.json`); `.hearback/usage.json` counts what it cost.
 - **AI review of the bug forum** (`review.py`): `needs_review` picks threads nobody has triaged, threads with human
   replies newer than the review, and threads whose `triage.ai` is older than the newest human activity (guides never;
   the bot's own replies never count). The prompt is the chosen agent's system prompt plus a fixed JSON output

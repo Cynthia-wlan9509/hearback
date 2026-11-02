@@ -4,15 +4,16 @@
 
 SWLink runs on your own computer and opens in your browser. One Discord bot, five jobs:
 
-- **Bug forum**: sync the forum, let an AI size up each report (what broke, where to look, a draft reply),
-  then approve replies and tags in one place. When the fix ships, every reporter hears back.
+- **Feedback inbox**: every forum channel of your server in one list, bugs, ideas and any forum you open later. Read
+  and answer in place. The AI helps only when you press its button, so nothing runs up a bill while you are away.
+  When a fix ships, every reporter hears back.
 - **Chat**: per channel and for DMs, choose ignore, draft only (you approve), or auto reply with an hourly cap.
 - **Supporters**: people who paid on Afdian (爱发电) DM the bot their order number and get a supporter role.
   Amounts stay private.
 - **Bot messages**: fix a typo in, or delete, anything the bot posted.
 - **Agents**: Claude Code, Codex and other MCP clients can triage and propose, but never send.
 
-![The Bug forum page in demo mode](docs/images/swlink-bug-forum.jpg)
+![The feedback inbox in demo mode](docs/images/swlink-inbox.jpg)
 
 Try it without Discord. Demo mode runs on a fake server, fake orders and a fake model; nothing connects anywhere:
 
@@ -152,8 +153,8 @@ pip install -e ".[all]"        # or pick extras: llm, bot, keyring, mcp
 hearback web                   # also: swlink. Opens http://127.0.0.1:8765/ in your browser
 ```
 
-First run: **Settings** (paste the bot token, follow the Developer Portal steps, use the invite link) → **LLM**
-(add a profile and key, press Test) → **Channel rules** (pick a channel, choose a mode) → **Dashboard** → Start.
+First run: **Settings** (paste the bot token, follow the Developer Portal steps, use the invite link, add the server id,
+press Start). Add a model under **Models** if you want the AI's help. Then **All feedback** is the page you work in.
 `hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
 
 Want to look around first? `hearback web --demo` (add `--lang zh` for Chinese data) opens the same console on made-up
@@ -176,15 +177,15 @@ Safety model:
   every outgoing message disables mentions.
 - Recent messages the bot sees are kept in `.hearback/inbox.jsonl` (gitignored, last 5000 lines).
 
-**Bug forum AI review.** Enter the server id and the forum channel id under **Settings** (they are saved into
-`hearback.toml`), press **Sync**, then **AI review**. For each thread that nobody has handled yet (or that got new
-replies) the model writes a suggestion into `triage.ai`: summary, cluster, severity, suggested status, likely cause,
-where to look, what to ask the reporter, and a draft reply. It never changes the fields a person owns. In the thread
-panel you can edit the draft and press **Send to approvals** (replies and tags still go through the approval queue),
-or **Adopt triage** to copy chosen fields into the real triage. **Export fix list** writes a markdown task sheet
-grouped by cluster for a coding agent. The **Bot messages** page lists what the bot itself posted in a thread or
-channel so you can fix a typo or delete a message. Screenshots (up to 3) and error lines from `.txt`/`.log`
-attachments are sent along; Sync downloads those attachments.
+**Feedback inbox.** Enter the server id under **Settings** (saved into `hearback.toml`). Every forum channel of the
+server appears by itself, including ones created later; pulling posts spends no tokens. A post waits for you until the
+bot, the server owner or an approver has answered, and comes back when someone else writes again. Pressing **Send** is
+the approval: the reply and the tags go out at once. **Draft with AI** asks the model about one post, and **Let AI go
+through them** drafts all waiting posts after telling you the model, the count and the rough cost; both only write
+drafts, into `triage.ai`. **Agents** picks which agent each forum uses, or No AI, and can leave a forum out. **Export fix
+list** under Settings writes a markdown task sheet grouped by cluster for a coding agent. The **Bot messages** page lists
+what the bot itself posted in a thread or channel so you can fix a typo or delete a message. Screenshots (up to 3) and
+error lines from `.txt`/`.log` attachments are sent along with a request to the model.
 
 **Supporter roles from Afdian.** Afdian (爱发电) now has an official Discord connection: authorize its bot in your creator
 settings and map plan tiers to roles, and a supporter who pays and then authorizes on Discord gets the role. If paid-to-role

@@ -39,18 +39,30 @@ def tag_lookup(table: dict[str, str], name: str) -> str | None:
     return None
 
 
+def _tag_table(data: dict, forum_id: str) -> dict[str, str] | None:
+    """The tags the ledger caches for this forum (names repeat across forums, ids do not); None when it has none."""
+    forum = data["forums"].get(forum_id)
+    if forum is not None:
+        return forum["tags"]
+    return data["tags"] if forum_id == data.get("forum_id") else None
+
+
 def resolve_tag_ids(client: DiscordClient, ledger: Ledger, forum_id: str, names: Sequence[str]) -> list[str]:
     """Names -> ids using the ledger's tag table; refreshes it from the forum once if a name is missing."""
     names = list(dict.fromkeys(names))
-    own = forum_id == ledger.load().get("forum_id")      # the ledger only caches its own forum's tags
-    table = ledger.load()["tags"] if own else {}
-    if not own or any(tag_lookup(table, n) is None for n in names):
+    cached = _tag_table(ledger.load(), forum_id)
+    table = cached or {}
+    if cached is None or any(tag_lookup(table, n) is None for n in names):
         forum = client.request("GET", "/channels/%s" % forum_id)
         table = {str(t["id"]): t["name"] for t in forum.get("available_tags", [])}
-        if own:
+        if cached is not None:
             with ledger.locked():
                 data = ledger.load()
-                data["tags"] = table
+                if forum_id in data["forums"]:
+                    data["forums"][forum_id]["tags"] = table
+                    data["tags"] = {i: n for f in data["forums"].values() for i, n in f["tags"].items()}
+                else:
+                    data["tags"] = table
                 ledger.save(data)
     out = []
     for n in names:
@@ -70,8 +82,9 @@ def forum_of(ledger: Ledger, forum_id: str = "") -> str:
 
 def set_tags(client: DiscordClient, ledger: Ledger, thread: str, add: Sequence[str], remove: Sequence[str],
              forum_id: str = "") -> dict:
-    """Add/remove forum tags on a thread (at most 5 in total). Reads the live tag list first."""
-    fid = forum_of(ledger, forum_id)
+    """Add/remove forum tags on a thread (at most 5 in total). Reads the live tag list first.
+    A thread the ledger knows uses its own forum's tags."""
+    fid = (ledger.load()["threads"].get(thread) or {}).get("forum_id") or forum_of(ledger, forum_id)
     add_ids = resolve_tag_ids(client, ledger, fid, add)
     rem_ids = resolve_tag_ids(client, ledger, fid, remove)
     live = client.request("GET", "/channels/%s" % thread)
@@ -84,9 +97,9 @@ def set_tags(client: DiscordClient, ledger: Ledger, thread: str, add: Sequence[s
     changed = set(new) != set(cur)
     if changed:
         client.request("PATCH", "/channels/%s" % thread, body={"applied_tags": new})
-    table = ledger.load()["tags"]
     with ledger.locked():
         data = ledger.load()
+        table = _tag_table(data, fid) or data["tags"]
         rec = data["threads"].get(thread)
         if rec is not None:
             rec["tags"] = [table.get(i, "?" + i) for i in new]

@@ -299,7 +299,7 @@ def _texts() -> dict[str, dict[str, str]]:
     return {lang: dict(re.findall(r'"([\w.\-]+)": "((?:[^"\\]|\\.)*)"', block)) for lang, block in (("zh", zh), ("en", en))}
 
 
-PAGES = ["dashboard", "conversations", "approvals", "forum", "botmsgs", "supporters", "llm", "agents", "rules", "logs", "settings"]
+PAGES = ["inbox", "conversations", "approvals", "botmsgs", "supporters", "llm", "agents", "rules", "logs", "settings"]
 
 
 def test_both_languages_have_the_same_texts():
@@ -319,9 +319,8 @@ def test_every_page_has_a_title_subtitle_and_a_short_how_to():
 
 def test_chinese_copy_for_the_pages_is_the_agreed_wording():
     zh = _texts()["zh"]
-    assert [zh["nav." + p] for p in PAGES] == ["仪表盘", "聊天", "待审批", "Bug 论坛", "机器人消息", "支持者", "模型",
+    assert [zh["nav." + p] for p in PAGES] == ["全部反馈", "聊天", "待审批", "机器人消息", "支持者", "模型",
                                               "人设", "频道规则", "日志", "设置"]
-    assert zh["sub.dashboard"] == "机器人状态和待办"
     assert zh["sub.approvals"].startswith("AI 写好、还没发出去的回复。批准并发送后才会发到 Discord")
     assert zh["sub.rules"] == "机器人在每个频道和私信里怎么做" and zh["sub.logs"] == "谁在什么时候做了什么"
     assert (zh["mode.off"], zh["mode.draft"], zh["mode.auto"]) == ("不理", "只起草", "自动回复")

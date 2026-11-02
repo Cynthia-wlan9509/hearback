@@ -145,6 +145,28 @@ def check_base_url(base_url: str) -> None:
                        "(http is only allowed for localhost)")
 
 
+# ---- what a call used, for the "AI spend this month" figure on the page
+PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0)}     # USD per million tokens, input and output
+_last_usage = threading.local()
+
+
+def _note_usage(input_tokens: Any, output_tokens: Any) -> None:
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        _last_usage.value = (input_tokens, output_tokens)
+
+
+def take_usage() -> tuple[int, int] | None:
+    """(input, output) tokens of this thread's last call since the last take; None when the provider did not say."""
+    value = getattr(_last_usage, "value", None)
+    _last_usage.value = None
+    return value
+
+
+def price_of(model: str) -> tuple[float, float] | None:
+    """Known prices only: a relay's model name says nothing about what it charges."""
+    return PRICES.get(str(model).strip().lower())
+
+
 class Provider:
     """What a provider object offers: one blocking call. A message's content is a string, or a list of
     {"type": "text", "text"} and image blocks (see image_block) when pictures are sent."""
@@ -163,6 +185,8 @@ class AnthropicProvider(Provider):
     def complete(self, system: str, messages: Sequence[Mapping[str, Any]], max_tokens: int) -> str:
         msgs = [{**m, "content": _anthropic_content(m["content"])} for m in messages]
         resp = self.client.messages.create(model=self.model, max_tokens=max_tokens, system=system, messages=msgs)
+        usage = getattr(resp, "usage", None)
+        _note_usage(getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None))
         if getattr(resp, "stop_reason", None) == "refusal":
             raise LLMError("model refused")
         text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text").strip()
@@ -194,6 +218,8 @@ class OpenAIProvider(Provider):
                 raise
             r = self.client.chat.completions.create(model=self.model, messages=msgs,
                                                     max_completion_tokens=max_tokens)
+        usage = getattr(r, "usage", None)
+        _note_usage(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))
         choice = r.choices[0]
         text = (choice.message.content or "").strip()
         if not text and getattr(choice, "finish_reason", None) == "length":

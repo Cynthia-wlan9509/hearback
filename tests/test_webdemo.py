@@ -12,7 +12,7 @@ from hearback import cli, llm
 from hearback.util import HearbackError
 from hearback.web import server as web
 from hearback.webdemo import BLOCKED, Demo, MemoryKeyring
-from hearback.webdemo_seed import CHANNELS, GUILD, THREADS, pick
+from hearback.webdemo_seed import IDEAS, CHANNELS, GUILD, THREADS, pick
 from test_web import SECRET, Web
 
 LANGS = ("en", "zh")
@@ -115,16 +115,16 @@ def test_nothing_real_is_used_for_secrets(demo_web, monkeypatch):
 def test_the_forum_is_seeded_with_mixed_triage_and_four_ai_reviews(demo_web):
     w = demo_web
     r = w.ok("GET", "/api/forum")
-    assert r["configured"] and len(r["items"]) == 8 == len(THREADS) and r["to_review"] == 2
-    assert {x["title"] for x in r["items"]} == {p(w, t["title"]) for t in THREADS}
+    assert r["configured"] and len(r["items"]) == 10 == len(THREADS) + len(IDEAS) and r["to_review"] == 4
+    assert {x["title"] for x in r["items"]} == {p(w, t["title"]) for t in THREADS} | {p(w, i[1]) for i in IDEAS}
     assert {x["status"] for x in r["items"]} == {"new", "need-info", "investigating", "fixed-pending-release", "not-bug"}
     reviewed = {x["title"]: x["ai"] for x in r["items"] if x["ai"]}
     assert len(reviewed) == 4 and {a["suggest_status"] for a in reviewed.values()} == {"investigating", "duplicate", "need-info"}
     assert all(x["needs_review"] and not x["ai"] for x in r["items"] if x["status"] == "new" and not x["ai"])
-    assert sum(1 for x in r["items"] if x["needs_review"] and not x["ai"]) == 2
+    assert sum(1 for x in r["items"] if x["needs_review"] and not x["ai"]) == 4
     assert r["model"] == "demo-model"
-    assert w.ok("GET", "/api/status")["forum_to_review"] == 2
-    assert w.ok("GET", "/api/status")["forum_threads"] == 8
+    assert w.ok("GET", "/api/status")["forum_to_review"] == 4
+    assert w.ok("GET", "/api/status")["forum_threads"] == 10
 
 
 def test_threads_have_replies_tags_an_image_and_ai_shape(demo_web):
@@ -149,10 +149,10 @@ def test_threads_have_replies_tags_an_image_and_ai_shape(demo_web):
 def test_ai_review_works_offline_with_the_fake_model(demo_web):
     w, app = demo_web, demo_web.srv.app
     job = w.ok("POST", "/api/forum/review", {})
-    assert job["total"] == 2
+    assert job["total"] == 4
     app.review.wait()
     st = w.ok("GET", "/api/forum/review")
-    assert st["running"] is False and st["reviewed"] == 2 and st["errors"] == [] and st["to_review"] == 0
+    assert st["running"] is False and st["reviewed"] == 4 and st["errors"] == [] and st["to_review"] == 0
     rows = w.ok("GET", "/api/forum")["items"]
     assert all(x["ai"] for x in rows if x["status"] == "new") and w.ok("GET", "/api/forum")["to_review"] == 0
     assert w.ok("POST", "/api/llm/%s/test" % app.llm.list_public()[0]["id"])["ok"] is True

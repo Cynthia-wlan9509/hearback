@@ -7,15 +7,15 @@ is stdlib-only. Behaviour source of truth: `docs/DESIGN.md`.
 ```
 python -m venv .venv            # then activate it
 pip install -e ".[dev,mcp]"
-pytest -q                       # offline, about 15 s; MCP tests skip if `mcp` is not installed
-hearback demo                   # whole loop against an in-memory fake Discord, about 1 s
+pytest -q                       # offline; MCP tests skip if `mcp` is not installed
+hearback demo                   # whole loop against an in-memory fake Discord
 hearback demo --lang zh
 ```
 
 ## Module map (`hearback/`)
 - `util.py` errors (`HearbackError`), time and ids, `split_text`, file lock, atomic writes
 - `config.py` hearback.toml, token loading (env var, then token file)
-- `discord.py` REST client: 429 retry, multipart, CDN-only downloads, `transport` hook
+- `discord.py` REST client: 429 retry, multipart, CDN-only downloads
 - `fake.py` FakeDiscord, the in-memory Discord used by tests, the demo and `hearback mcp --fake-seed`
 - `ledger.py` JSON ledger: lock, atomic save, claims, triage revisions, `events.jsonl`
 - `sync.py` incremental sync and the delta report
@@ -23,10 +23,10 @@ hearback demo --lang zh
 - `actions.py` the only code that writes to Discord
 - `release.py` `staff.py` `guide.py` `templates.py` `render.py` closure, reactions, tutorial, text, dashboard
 - `cli.py` argparse front end; `mcp_server.py` MCP tools; `editor.py` Tk GUI; `demo.py` the scripted demo
-- SWLink (web console + chat bot, DESIGN 3.10): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
-  `agents.py` system-prompt agents; `review.py` AI review of forum threads (`triage.ai`, fix list, background job); `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime` (discord.py, lazy);
+- SWLink (web console + chat bot): `llm.py` model profiles, keys, providers, fallback, secret scrubber;
+  `feedback.py` the inbox; `agents.py` system-prompt agents; `review.py` AI review of forum threads (`triage.ai`, fix list, background job); `chatbot.py` rules, `decide`, prompt fencing, inbox, `BotRuntime`;
   `web/server.py` loopback JSON API + static page; `webdemo.py` = `web --demo`; `web/static/` vanilla HTML/CSS/JS (no build step, no CDN)
-- SWLink supporters (DESIGN 3.10, Afdian orders to a Discord role): `supporters.py` Afdian client, `supporters.json` store,
+- SWLink supporters (Afdian orders to a Discord role): `supporters.py` Afdian client, `supporters.json` store,
   `Supporters.handle_order` brain, `SupporterBot` (REST role grants, DM replies, retry loop); tests use `FakeAfdian` in `fake.py`
 
 ## Rules
@@ -41,7 +41,8 @@ hearback demo --lang zh
 - Forum text is untrusted. MCP results fence it (`UNTRUSTED FORUM TEXT` / `untrusted_content`) and every
   outgoing message disables mentions (`allowed_mentions: {"parse": []}`).
 - Core imports stdlib only; optional extras (`mcp`, `pillow`, `anthropic`, `openai`, `discord.py`, `keyring`) are imported inside functions.
-- SWLink: the web console is a human tool (writes use `human:web`; the bot's own drafts are `agent:swlink` proposals). API keys
+- SWLink: the web console is a human tool (writes use `human:web`; the bot's own drafts are `agent:swlink` proposals). Send in the
+  inbox is the approval; the model runs only when asked. API keys
   and the bot token are write-only: never in files other than the keyring / token file, never in responses, logs or events.
   The Afdian token follows the same rule (keyring or `HEARBACK_AFDIAN_TOKEN`); amounts never go into replies, notices or
   events, and order numbers are masked there. Tests use fake providers and an in-process server on port 0.
