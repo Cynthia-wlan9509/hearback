@@ -2,19 +2,17 @@
 
 **A local console and Discord bot for small game communities. The AI drafts; you approve.**
 
-SWLink runs on your own computer and opens in your browser. One Discord bot, five jobs:
+SWLink runs on your own computer and opens in your browser. One Discord bot, four jobs:
 
 - **Bug forum**: sync the forum, let an AI size up each report (what broke, where to look, a draft reply),
   then approve replies and tags in one place. When the fix ships, every reporter hears back.
 - **Chat**: per channel and for DMs, choose ignore, draft only (you approve), or auto reply with an hourly cap.
-- **Supporters**: people who paid on Afdian (爱发电) DM the bot their order number and get a supporter role.
-  Amounts stay private.
 - **Bot messages**: fix a typo in, or delete, anything the bot posted.
 - **Agents**: Claude Code, Codex and other MCP clients can triage and propose, but never send.
 
 ![The Bug forum page in demo mode](docs/images/swlink-bug-forum.jpg)
 
-Try it without Discord. Demo mode runs on a fake server, fake orders and a fake model; nothing connects anywhere:
+Try it without Discord. Demo mode runs on a fake server and a fake model; nothing connects anywhere:
 
 ```
 pip install -e ".[all]"
@@ -39,7 +37,7 @@ thread, for the build they actually run. Everything below also works from the co
 
 ## Why
 
-Small teams (indie and fan game projects, open-source tools) collect bug reports in a Discord forum.
+Small teams (indie game projects, open-source tools) collect bug reports in a Discord forum.
 Collecting is easy. The loop after it is what breaks:
 
 - the same root cause is reported six times in six different words;
@@ -137,8 +135,6 @@ The workflow an agent should follow is in [integrations/AGENT_PLAYBOOK.md](integ
 
 ## SWLink: web console and chat bot
 
-![The Supporters page in demo mode](docs/images/swlink-supporters.jpg)
-
 SWLink is an optional, opt-in part of Hearback: a local web page plus an always-on chat bot for your Discord
 server. You choose which servers, channels and DMs the bot answers in, which **agent** (system prompt) answers,
 which **LLM** (your own API keys: Anthropic, OpenAI, DeepSeek, or any OpenAI- or Anthropic-compatible relay), and
@@ -157,7 +153,7 @@ First run: **Settings** (paste the bot token, follow the Developer Portal steps,
 `hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
 
 Want to look around first? `hearback web --demo` (add `--lang zh` for Chinese data) opens the same console on made-up
-data: a fake server, forum, queue and supporters. It needs no Discord, no key and no network, saves nothing, and its
+data: a fake server, forum and queue. It needs no Discord, no key and no network, saves nothing, and its
 temporary folder disappears when you stop it. Use it to try the pages, and for screenshots and screen recordings.
 
 Safety model:
@@ -185,14 +181,6 @@ or **Adopt triage** to copy chosen fields into the real triage. **Export fix lis
 grouped by cluster for a coding agent. The **Bot messages** page lists what the bot itself posted in a thread or
 channel so you can fix a typo or delete a message. Screenshots (up to 3) and error lines from `.txt`/`.log`
 attachments are sent along; Sync downloads those attachments.
-
-**Supporter roles from Afdian.** Discord's own paid roles are US-only, and many Chinese creators collect support on
-Afdian (爱发电) instead. The **Supporters** page links the two: a supporter pays on Afdian, DMs the bot the order
-number, the bot checks it with Afdian's open API and gives the supporter role. Paste your Afdian `user_id` and API token
-(the token goes to the OS keyring or `HEARBACK_AFDIAN_TOKEN`, never to a file), pick the role, try **Simulate a DM**,
-then switch on **DM checking**. Replies are fixed templates (no model), amounts are never shown or sent anywhere, order
-numbers are masked in notices and logs, an order can be claimed once, and the owner can claim or revoke by hand. If the
-bot's role sits below the supporter role the page tells you exactly what to drag where.
 
 ## Safety model
 
