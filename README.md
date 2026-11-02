@@ -186,8 +186,16 @@ grouped by cluster for a coding agent. The **Bot messages** page lists what the 
 channel so you can fix a typo or delete a message. Screenshots (up to 3) and error lines from `.txt`/`.log`
 attachments are sent along; Sync downloads those attachments.
 
-**Supporter roles from Afdian.** Discord's own paid roles are US-only, and many Chinese creators collect support on
-Afdian (爱发电) instead. The **Supporters** page links the two: a supporter pays on Afdian, DMs the bot the order
+**Supporter roles from Afdian.** Afdian (爱发电) now has an official Discord connection: authorize its bot in your creator
+settings and map plan tiers to roles, and a supporter who pays and then authorizes on Discord gets the role. If paid-to-role
+is all you need, use that instead of this page. It also works while your computer is off.
+
+Use the **Supporters** page when the role must require another role first (such as passing an entry check), when you
+would rather not give a third-party bot permissions like kicking members and creating invites, or when you want to keep
+the link between orders and Discord accounts yourself. The cost: your computer has to be on, and supporters have one more
+step. Don't let the official bot and SWLink manage the same role.
+
+How it works: a supporter pays on Afdian, DMs the bot the order
 number, the bot checks it with Afdian's open API and gives the supporter role. Paste your Afdian `user_id` and API token
 (the token goes to the OS keyring or `HEARBACK_AFDIAN_TOKEN`, never to a file), pick the role, try **Simulate a DM**,
 then switch on **DM checking**. Replies are fixed templates (no model), amounts are never shown or sent anywhere, order
