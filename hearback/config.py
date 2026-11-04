@@ -92,6 +92,7 @@ class Config:
     codes: dict = field(default_factory=dict)                       # [codes]: see hearback/codes.py
     welcome: dict = field(default_factory=dict)                     # [welcome]: see hearback/welcome.py
     swlink_others: list[str] = field(default_factory=list)          # [swlink] others: SWLink folders of other bots
+    swlink_project_dir: str = ""     # [swlink] project_dir: the game's code, named in the text for a coding assistant
 
     # ---- paths
     @property
@@ -210,6 +211,10 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     if not isinstance(peers, list) or not all(isinstance(x, str) and x.strip() for x in peers):
         raise HearbackError("[swlink] others must be a list of folder paths")
     cfg.swlink_others = [x.strip() for x in peers]
+    project = (raw.get("swlink") or {}).get("project_dir", "")
+    if not isinstance(project, str):
+        raise HearbackError("[swlink] project_dir must be a folder path")
+    cfg.swlink_project_dir = project.strip()
     from hearback.codes import parse_codes
     cfg.codes = parse_codes(raw.get("codes"))
     from hearback.welcome import parse_welcome

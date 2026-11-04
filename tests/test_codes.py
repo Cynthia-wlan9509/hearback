@@ -174,3 +174,14 @@ def test_without_role_or_not_in_server(bot):
     said = dm(bot, stranger, DEV_B)
     assert len(said) == 1 and "cannot find you" in said[0]
     assert dm(bot, stranger, "hello")[-1:] == said[-1:]           # no device code: not ours, nothing new said
+
+
+def test_issued_codes_stay_hidden_after_a_restart(tmp_path, monkeypatch):
+    import json
+
+    from hearback import llm
+    from hearback.codes import Codes
+    monkeypatch.setattr(llm, "_SECRETS", set(llm._SECRETS))
+    (tmp_path / "codes.json").write_text(json.dumps({"issued": {"1": [{"device": "A", "code": "kept-code-from-last-run"}]}}), encoding="utf-8")
+    Codes({"enabled": True, "role_id": "1", "command": ["x"]}, tmp_path)
+    assert "kept-code" not in llm.scrub("here: kept-code-from-last-run")

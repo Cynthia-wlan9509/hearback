@@ -85,6 +85,11 @@ def _member_view(m: dict) -> dict:
             "display": str(m.get("nick") or u.get("global_name") or u.get("username") or "")}
 
 
+def _masked(text: Any) -> bool:
+    """The page would see this text with a secret (an issued code, say) blanked out, so it must not edit it."""
+    return scrub(text) != str(text)
+
+
 def _order_time(o: dict) -> str:
     """An order's creation time as ISO text when Afdian sent a Unix timestamp, else empty."""
     try:
@@ -616,6 +621,7 @@ class App:
         add("GET", "/api/feedback", self.api_feedback)
         add("POST", "/api/feedback/sync", self.api_feedback_sync)
         add("POST", "/api/feedback/review", self.api_feedback_review)
+        add("POST", "/api/feedback/handoff", self.api_feedback_handoff)
         add("PUT", "/api/feedback/forums/(\\d+)", self.api_feedback_forum)
         add("GET", "/api/feedback/(\\d+)", self.api_feedback_thread)
         add("GET", "/api/feedback/(\\d+)/file/(\\d+)", self.api_feedback_file)
@@ -757,6 +763,7 @@ class App:
             items.append({"id": str(m.get("id")), "author_id": str(a.get("id", "")), "author_name": display_name(a),
                           "avatar": avatar_url(a), "content": m.get("content") or "", "time": m.get("timestamp") or "",
                           "is_bot": bool(a.get("bot")), "is_self": str(a.get("id", "")) == bot_id,
+                          "masked": _masked(m.get("content") or ""),
                           "attachments": len(m.get("attachments") or [])})
         return 200, {"items": items}
 
@@ -1065,7 +1072,7 @@ class App:
             forum = self._home_forum(data, rec)
             state = feedback.inbox_state(tid, rec, staff)
             if state and forum not in hidden and (not data["forums"] or forum in data["forums"]):
-                out.append(feedback.row(tid, rec, state, staff, forum))
+                out.append(feedback.row(tid, rec, state, staff, forum, self.cfg.status_tags))
         out.sort(key=lambda r: r["time"] or "", reverse=True)
         return out
 
@@ -1141,11 +1148,12 @@ class App:
             messages.append({"id": str(r.get("id")), "author": r.get("author", ""), "time": r.get("time", ""),
                              "content": str(r.get("content") or "")[:4000], "files": views(r.get("attachments")),
                              "bot": bool(r.get("bot")) or str(r.get("id")) in posted,
-                             "staff": str(r.get("author_id") or "") in staff})
+                             "staff": str(r.get("author_id") or "") in staff, "masked": _masked(r.get("content") or "")})
         for p in tri.get("replies_posted") or []:      # sent from here, not pulled back yet
             if str(p.get("message_id")) not in seen:
                 messages.append({"id": str(p.get("message_id")), "author": "", "time": p.get("time", ""),
-                                 "content": str(p.get("content") or "")[:4000], "files": [], "bot": True, "staff": True})
+                                 "content": str(p.get("content") or "")[:4000], "files": [], "bot": True, "staff": True,
+                                 "masked": _masked(p.get("content") or "")})
         messages.sort(key=lambda m: int(m["id"]) if m["id"].isdigit() else 0)
         paths = review.thread_files(self.ledger, rec)
         ai = tri.get("ai") if isinstance(tri.get("ai"), dict) else None
@@ -1215,6 +1223,25 @@ class App:
             raise ApiError(409, str(e)) from None
         self.ledger.event(ACTOR, "ai_review_start", None, {"threads": len(ids)})
         return 200, {"job": job, "total": len(ids)}
+
+    def api_feedback_handoff(self, q: Request) -> tuple[int, Any]:
+        """The chosen posts as one text to paste into a coding assistant. Reads only; the caller copies it."""
+        data = self.ledger.load()
+        asked = q.body.get("ids")
+        if not isinstance(asked, list) or not asked:
+            raise ApiError(400, "pick at least one post")
+        ids = list(dict.fromkeys(str(x) for x in asked))
+        if any(x not in data["threads"] for x in ids):
+            raise ApiError(404, "no such post")
+        picked = ids[:feedback.HANDOFF_MAX]
+        guild = str(data.get("guild_id") or self.cfg.guild_id or "")
+        entry = self.cfg.swlink_project_dir
+        project = str(Path(entry) if Path(entry).is_absolute() else (self.cfg.root / entry).resolve()) if entry else ""
+        text = feedback.handoff_text(self.ledger, data, picked, project=project, zh=self.cfg.language == "zh",
+                                     forum_names={r["id"]: r["name"] for r in self._forum_rows(data)},
+                                     staff=feedback.staff_ids(data, self.cfg.approvers),
+                                     link=lambda tid: "https://discord.com/channels/%s/%s" % (guild, tid) if guild else "")
+        return 200, {"text": text, "count": len(picked), "left": len(ids) - len(picked)}
 
     def api_feedback_send(self, q: Request) -> tuple[int, Any]:
         """A person pressed Send: that is the approval, so the reply and the tags go out at once (through the queue,
@@ -1323,6 +1350,7 @@ class App:
         msgs = actions.list_bot_messages(self.client(), channel, self.bot_id(), 100)
         items = [{"id": str(m["id"]), "content": m.get("content") or "", "time": m.get("timestamp") or "",
                   "edited": bool(m.get("edited_timestamp")),
+                  "masked": _masked(m.get("content") or ""),
                   "attachments": [str(a.get("filename") or "") for a in m.get("attachments") or []]} for m in msgs]
         return 200, {"channel": channel, "label": self._place_label(channel), "focus": focus or "", "items": items}
 
@@ -1336,6 +1364,8 @@ class App:
     def api_botmsg_edit(self, q: Request) -> tuple[int, Any]:
         channel, message = q.groups
         msg = self._own_message(channel, message)
+        if _masked(msg.get("content") or ""):    # the page only has *** to offer; saving would replace the real text
+            raise ApiError(400, "masked_message")
         new = editor.save_message(self.client(), self.ledger, channel, msg, str(q.body.get("text") or ""), ACTOR)
         self.inbox.revise(channel, message, new.get("content", ""))     # later replies see the corrected text
         return 200, {"id": message, "content": new.get("content", "")}

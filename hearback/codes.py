@@ -91,6 +91,12 @@ class Codes:
         self.clock, self.runner = clock, runner
         self.lock = threading.Lock()          # one issue at a time: issuing commands often bump a serial number
         self._rx = re.compile(self.s.get("pattern") or DEFAULT_PATTERN)
+        try:                                  # stays out of the page after a restart too, not just the run that issued it
+            for mine in self.load()["issued"].values():
+                for x in mine if isinstance(mine, list) else []:
+                    register_secret(str(x.get("code") or "") if isinstance(x, dict) else "")
+        except HearbackError:
+            pass
 
     @property
     def enabled(self) -> bool:

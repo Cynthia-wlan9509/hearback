@@ -79,6 +79,7 @@ const ICONS = {
   back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   star: '<path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.200L5.8 21 7 14.2 2 9.300l6.9-1z"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
 };
 function icon(name, cls) {
   const doc = new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + "</svg>", "image/svg+xml");
@@ -437,13 +438,15 @@ async function pageInbox() {
   const D = FB.doms = { sub, stats: h("div", { class: "stats" }), seg: h("div", { class: "seg" }), bulk: h("div", { class: "bulk hidden" }),
     list: h("div", { class: "list" }), right: h("div", { class: "fdetail" }), refresh };
   const bulkBtn = h("button", { class: "textbtn", onclick: showBulk }, icon("spark"), t("fb.bulk"));
+  const handoffBtn = h("button", { class: "textbtn", onclick: copyAllForAgent }, icon("code"), h("span"));
+  D.handoffBtn = handoffBtn;
   if (FB.sel === null || !fbShown().some((p) => p.id === FB.sel)) FB.sel = (fbShown()[0] || { id: null }).id;
   drawInbox();
   drawRight();
   if (!FB.pulled[STATUS && STATUS.server || ""]) pull(false);
   return h("div", { class: "inbox-wrap col grow" }, D.stats,
     h("div", { class: "work" },
-      h("div", { class: "col listcol" }, h("div", { class: "bar" }, D.seg, bulkBtn), D.bulk, D.list),
+      h("div", { class: "col listcol" }, h("div", { class: "bar" }, D.seg, h("span", { class: "bar-acts" }, handoffBtn, bulkBtn)), D.bulk, D.list),
       D.right));
 }
 
@@ -458,6 +461,7 @@ function drawInbox() {
   clear(D.seg);
   [["todo", t("fb.todo") + " " + left], ["done", t("fb.done") + " " + (scope.length - left)]].forEach(([v, label]) =>
     D.seg.appendChild(h("button", { class: FB.view === v ? "on" : "", onclick: () => setView(v) }, label)));
+  D.handoffBtn.lastChild.textContent = FB.view === "done" ? t("fb.handoffUnfixed", { n: forAgent().length }) : t("fb.handoffAll");
   drawList();
 }
 function setView(v) {
@@ -482,7 +486,8 @@ function drawList() {
       h("span", { class: "post-body" },
         h("span", { class: "post-t" }, h("b", null, p.title),
           p.fresh ? h("span", { class: "chip new" }, t("fb.fresh." + p.fresh)) : null,
-          p.has_draft && p.state === "todo" ? h("span", { class: "chip draft" }, t("fb.hasDraft")) : null),
+          p.has_draft && p.state === "todo" ? h("span", { class: "chip draft" }, t("fb.hasDraft")) : null,
+          p.unfixed && forumKind(f.name) !== "idea" ? h("span", { class: "chip" }, t("fb.unfixed")) : null),
         h("span", { class: "post-s" }, p.preview),
         h("span", { class: "post-m" }, [forumName(f), p.author, relTime(p.time)].filter(Boolean).join(" · ")))));
   });
@@ -538,7 +543,7 @@ async function drawRight() {
     say(d.author, d.created, d.body, false, [pictures(d.files), log]),
     d.more ? h("div", { class: "muted small-text gap-top" }, t("fb.more", { n: d.more })) : null,
     d.messages.map((m) => {
-      const edit = m.bot && m.content ? h("button", { class: "link-btn", onclick: () => editBotMessage(id, m, drawRight) }, t("bm.edit")) : null;
+      const edit = m.bot && m.content && !m.masked ? h("button", { class: "link-btn", onclick: () => editBotMessage(id, m, drawRight) }, t("bm.edit")) : null;
       const node = say(m.bot ? botName : m.author, m.time, m.content, m.bot, pictures(m.files));
       if (edit) node.querySelector(".fmsg-who").appendChild(edit);
       return node;
@@ -602,6 +607,7 @@ function compose(d, f) {
     h("button", { class: "btn primary", id: "send", onclick: () => sendPost(d) }, t("fb.send")),
     d.state === "done" ? h("button", { class: "btn", onclick: () => reopenPost(d) }, t("fb.reopen")) : h("button", { class: "btn", onclick: () => skipPost(d) }, t("fb.skip")),
     noAi ? null : h("button", { class: "btn", disabled: busy, onclick: () => askAi(d) }, icon("spark"), busy ? t("fb.ai.busy") : (ai ? t("fb.ai.again") : t("fb.ai.go"))),
+    h("button", { class: "btn", title: t("fb.handoffHint"), onclick: () => copyForAgent([d.id]) }, icon("code"), t("fb.handoff")),
     polish, undoPolish, h("span", { class: "grow" }), h("span", { class: "keys" }, t("fb.keys"))));
 }
 
@@ -668,6 +674,31 @@ async function askAi(d) {
   } catch (e) { fail(e); }
   FB.busy = null;
   if (FB.sel === d.id) drawRight();
+}
+
+/* The posts as one text for a coding assistant: no model call here, nothing is marked, the person pastes it */
+async function copyForAgent(ids) {
+  try {
+    const r = await api("POST", "/api/feedback/handoff", { ids });
+    try {
+      await navigator.clipboard.writeText(r.text);
+      toast(r.left ? t("fb.handoffSome", { n: r.count, m: r.left }) : t("fb.handoffDone", { n: r.count }));
+    } catch (e) {     // the browser refused the clipboard: show it, selected, to copy by hand
+      const pre = h("pre", { class: "preview export" }, r.text);
+      modal(t("fb.handoff"), pre, [{ label: t("common.close") }], true);
+      const range = document.createRange(), sel = window.getSelection();
+      range.selectNodeContents(pre); sel.removeAllRanges(); sel.addRange(range);
+    }
+  } catch (e) { fail(e); }
+}
+/* Waiting posts, or under "done" the answered ones not fixed yet. Idea forums are not for fixing. */
+function forAgent() {
+  return fbItems().filter((p) => (FB.view === "done" ? p.unfixed : p.state === "todo") && forumKind(forumOf(p.forum).name) !== "idea").map((p) => p.id);
+}
+function copyAllForAgent() {
+  const ids = forAgent();
+  if (!ids.length) { toast(t(FB.view === "done" ? "fb.handoffNoUnfixed" : "fb.handoffNone")); return; }
+  copyForAgent(ids);
 }
 
 async function pull(loud) {
@@ -833,7 +864,7 @@ async function pageConversations() {
           body.appendChild(h("div", { class: "msg" + (m.is_self ? " self" : "") },
             h("div", { class: "avatar" }, img ? h("img", { src: img, alt: "" }) : (m.author_name || "?").slice(0, 1).toUpperCase()),
             h("div", { class: "bubble" }, h("div", { class: "who" }, m.author_name + " · " + fmtTime(m.time),
-              m.is_self && m.content ? h("button", { class: "link-btn", onclick: () => editBotMessage(c.id, m, load) }, t("bm.edit")) : null),
+              m.is_self && m.content && !m.masked ? h("button", { class: "link-btn", onclick: () => editBotMessage(c.id, m, load) }, t("bm.edit")) : null),
               h("div", { class: "txt" }, text))));
         }
         body.scrollTop = body.scrollHeight;          // the message box only; never the page
@@ -1012,7 +1043,7 @@ async function pageBotMsgs() {
   function msgCard(r, m) {
     return h("div", { class: "card bm" + (r.focus === m.id ? " focus" : "") },
       h("div", { class: "row" }, h("span", { class: "muted small-text grow" }, fmtTime(m.time) + (m.edited ? " · " + t("bm.edited") : "")),
-        h("button", { class: "btn small", onclick: () => editMsg(r, m) }, t("bm.edit")),
+        m.masked ? null : h("button", { class: "btn small", onclick: () => editMsg(r, m) }, t("bm.edit")),
         h("button", { class: "icon-btn", title: t("common.delete"), onclick: () => delMsg(r, m) }, trashIcon())),
       h("div", { class: "txt" }, m.content || (m.attachments.length ? m.attachments.join(", ") : "")),
       m.content && m.attachments.length ? h("div", { class: "small-text muted" }, m.attachments.join(", ")) : null);

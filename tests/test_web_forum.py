@@ -345,3 +345,21 @@ def test_the_page_loads_its_texts_and_remembers_dismissals_safely():
 def test_i18n_script_is_served(web_env):
     r = web_env.get("/i18n.js", key=None)
     assert r.status == 200 and r.headers["content-type"].startswith("text/javascript") and b"const I18N" in r.raw
+
+
+def test_a_message_with_hidden_text_cannot_be_edited_into_stars(web_env, monkeypatch):
+    w, e = web_env, web_env.env
+    monkeypatch.setattr(llm, "_SECRETS", set(llm._SECRETS))
+    llm.register_secret("issued-code-for-this-test-0001")
+    ch = e.fake.add_channel("dm-like")
+    secret = w.ok("POST", "/api/conversations/%s/send" % ch, {"text": "issued-code-for-this-test-0001"})["message_ids"][0]
+    plain = w.ok("POST", "/api/conversations/%s/send" % ch, {"text": "plain words"})["message_ids"][0]
+    conv = {m["id"]: m for m in w.ok("GET", "/api/conversations/%s/messages" % ch)["items"]}
+    assert conv[secret]["masked"] is True and conv[secret]["content"] == "***" and conv[plain]["masked"] is False
+    assert {m["id"]: m["masked"] for m in w.ok("GET", "/api/botmsgs?channel=" + ch)["items"]} == {secret: True, plain: False}
+    r = w.call("PUT", "/api/botmsgs/%s/%s" % (ch, secret), {"text": "***"})
+    assert r.status == 400 and r.json["error"] == "masked_message"
+    assert next(m for m in e.fake.messages[ch] if m["id"] == secret)["content"] == "issued-code-for-this-test-0001"
+    w.ok("PUT", "/api/botmsgs/%s/%s" % (ch, plain), {"text": "better words"})
+    js = (Path(web.STATIC_DIR) / "app.js").read_text(encoding="utf-8")
+    assert js.count("!m.masked") == 2 and "m.masked ? null :" in js

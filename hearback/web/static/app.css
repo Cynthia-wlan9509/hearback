@@ -164,6 +164,7 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
 .work { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(330px, 410px) minmax(0, 1fr); gap: 16px; }
 .col { min-height: 0; display: flex; flex-direction: column; }
 .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; flex: none; }
+.bar-acts { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
 .bulk { border: 1px solid var(--line); background: var(--raised); border-radius: 11px; padding: 9px 12px; margin-bottom: 11px; font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: none; }
 .bulk .btn { padding: 3px 11px; font-size: 13px; }
 .bulk .grow { min-width: 130px; }
