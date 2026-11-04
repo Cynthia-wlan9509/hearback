@@ -267,7 +267,8 @@ tr.hl td { background: var(--sel); }
 .conv { display: grid; grid-template-columns: 290px 1fr; gap: 16px; height: calc(100vh - 190px); min-height: 460px; }
 .conv-list, .conv-chat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .conv-list-head { padding: 12px; border-bottom: 1px solid var(--line); }
-.conv-list-head .count { color: var(--sub); font-size: 12.5px; margin-top: 6px; }
+.conv-tabs { display: flex; margin-bottom: 8px; }
+.conv-tabs button { flex: 1; }
 .conv-scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 4px 6px; }
 .group-title { padding: 10px 8px 4px; font-size: 12.5px; color: var(--sub); }
 .conv-item { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 8px; border-radius: 9px; }

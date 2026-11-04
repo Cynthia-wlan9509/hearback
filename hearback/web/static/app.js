@@ -746,7 +746,6 @@ async function pageConversations() {
   let items = convs.items, rules = rulesRes.rules, agents = agentsRes.items, sel = null, filter = "all";
   const ruleFor = (c) => rules.channels[c.id] || (c.kind === "dm" ? rules.dm_default : rules.guild_default);
   const listBox = h("div", { class: "conv-scroll" });
-  const count = h("div", { class: "count" });
   const filterSel = h("select", { onchange: (e) => { filter = e.target.value; drawList(); } },
     h("option", { value: "all" }, t("conv.filter.all")),
     MODES.map((m) => h("option", { value: "mode:" + m }, t("mode." + m))),
@@ -754,24 +753,40 @@ async function pageConversations() {
   const chatBox = h("div", { class: "conv-chat" });
   if (!items.length) return empty(t("conv.empty.title"), convs.reason === "no_token" ? t("err.no_token") : t("conv.empty.text"), goBtn("settings", t("nav.settings")));
 
+  /* private messages and channel talk are looked after differently, so each has its own tab (remembered per browser) */
+  const isDm = (c) => c.kind === "dm";
+  const tabs = h("div", { class: "seg conv-tabs" });
+  let tab = store("get", "swlink.chatTab") === "channel" ? "channel" : "dm";
+  if (!items.some((c) => (tab === "dm") === isDm(c))) tab = tab === "dm" ? "channel" : "dm";
+
+  function matches(c) {
+    if (filter === "all") return true;
+    const [k, v] = filter.split(":");
+    return k === "mode" ? ruleFor(c).mode === v : ruleFor(c).agent === v;
+  }
   function visible() {
-    return items.filter((c) => {
-      if (filter === "all") return true;
-      const [k, v] = filter.split(":");
-      return k === "mode" ? ruleFor(c).mode === v : ruleFor(c).agent === v;
+    return items.filter((c) => (tab === "dm") === isDm(c) && matches(c));
+  }
+  function drawTabs() {
+    clear(tabs);
+    [["dm", t("conv.dms")], ["channel", t("conv.channels")]].forEach(([k, label]) => {
+      const n = items.filter((c) => (k === "dm") === isDm(c) && matches(c)).length;
+      tabs.appendChild(h("button", { class: tab === k ? "on" : "", onclick: () => { tab = k; store("setL", "swlink.chatTab", k); drawList(); } }, label + " " + n));
     });
   }
   function drawList() {
     const vis = visible();
+    drawTabs();
     clear(listBox);
+    if (!vis.length) listBox.appendChild(h("div", { class: "muted pad" }, t("conv.none")));
     const groups = new Map();
     for (const c of vis) {
-      const g = c.kind === "dm" ? t("conv.dms") : (c.guild_name || c.guild_id);
+      const g = isDm(c) ? "" : (c.guild_name || c.guild_id);
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(c);
     }
     for (const [g, list] of groups) {
-      listBox.appendChild(h("div", { class: "group-title" }, g));
+      if (g) listBox.appendChild(h("div", { class: "group-title" }, g));
       for (const c of list) {
         const m = ruleFor(c).mode;
         const locked = c.readable === false;
@@ -780,7 +795,6 @@ async function pageConversations() {
           c.preview ? h("div", { class: "pv" }, c.preview) : null));
       }
     }
-    count.textContent = t("conv.total", { n: vis.length });
   }
   function noAccessCard(name) {
     return h("div", { class: "no-access" }, lockIcon(), h("h3", null, t("conv.noAccess.title", { name: name || t("conv.noAccess.bot") })), h("div", { class: "sub" }, t("conv.noAccess.text")));
@@ -846,7 +860,7 @@ async function pageConversations() {
   }
   chatBox.appendChild(h("div", { class: "empty" }, t("conv.pick")));
   drawList();
-  return h("div", { class: "conv" }, h("div", { class: "conv-list" }, h("div", { class: "conv-list-head" }, filterSel, count), listBox), chatBox);
+  return h("div", { class: "conv" }, h("div", { class: "conv-list" }, h("div", { class: "conv-list-head" }, tabs, filterSel), listBox), chatBox);
 }
 
 /* ---------- approvals ---------- */

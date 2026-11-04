@@ -667,6 +667,13 @@ def test_llm_profiles_take_max_concurrent_and_default_to_2048_tokens(web_env):
     assert w.ok("GET", "/api/llm")["profiles"][0]["max_concurrent"] == 6
 
 
+def test_the_chat_page_keeps_dms_and_channels_on_separate_tabs():
+    js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    body = js[js.index("async function pageConversations()"):js.index("function noAccessCard(name)")]
+    assert '[["dm", t("conv.dms")], ["channel", t("conv.channels")]]' in body
+    assert '(tab === "dm") === isDm(c) && matches(c)' in body and 'store("setL", "swlink.chatTab", k)' in body
+
+
 def test_the_chat_page_fills_the_window_and_the_composer_cannot_fall_off():
     css = (web.STATIC_DIR / "app.css").read_text(encoding="utf-8")
     js = (web.STATIC_DIR / "app.js").read_text(encoding="utf-8")
