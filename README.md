@@ -44,10 +44,10 @@ Collecting is easy. The loop after it is what breaks:
 - the same root cause is reported six times in six different words;
 - an AI agent re-reads the whole forum every session — slow, expensive, and it re-triages old posts;
 - replies are public, so an agent must not post on its own — but approving 20 replies one by one is tedious;
-- when the fix ships, nobody goes back to tell the 22 people who reported it. They stop reporting.
+- when the fix ships, nobody goes back to tell the people who reported it. They stop reporting.
 
-Hearback was extracted from a workflow that ran a real game community's bug forum: 29 reports,
-22 fixes, and every affected reporter notified on release day.
+Hearback was extracted from a workflow that ran a real game community's bug forum. As of November 2026 it runs
+the bug forums of three game communities: 54 reports, 34 fixed and shipped, and a reply to the reporter on each of those 34.
 
 ## What makes it different
 
