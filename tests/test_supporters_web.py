@@ -763,3 +763,50 @@ def test_a_bot_message_sent_while_swlink_was_closed_does_not_count_as_an_answer(
             Message(id="202", channel_id=ch, author_id=bot, author_name="bot", content="welcome!", is_bot=True)]
     sup.app.on_missed(msgs, bot)
     assert list(sup.store.load()["claims"]) == [no]
+
+
+# ---------------------------------------------------------------- DMs relayed to the owner
+
+def test_a_dm_no_flow_answers_reaches_the_server_owner(sup):
+    sup.go_live()
+    sup.fake.owner_id = sup.owner["id"]
+    sup.dm(sup.mira, "hi, the game crashes on <@&123> @everyone\nsecond line")
+    assert sup.said(sup.mira) == []                                   # the person gets no reply from this
+    note = sup.said(sup.owner)
+    assert len(note) == 1 and "<@%s>" % sup.mira["id"] in note[0] and "second line" in note[0]
+    assert "<@&" not in note[0] and "@everyone" not in note[0]       # their text can never ping anyone
+    sup.dm(sup.mira, "")
+    assert "no text" in sup.said(sup.owner)[1]
+
+
+def test_orders_codes_and_the_owners_own_dms_are_not_relayed(sup):
+    sup.go_live()
+    sup.fake.owner_id = sup.owner["id"]
+    sup.dm(sup.mira, sup.order())
+    assert all("sent the bot a DM" not in t for t in sup.said(sup.owner))
+    sup.dm(sup.owner, "testing my own bot")
+    assert all("testing my own bot" not in t for t in sup.said(sup.owner))
+
+
+def test_relaying_can_be_switched_off(sup):
+    sup.go_live()
+    sup.fake.owner_id = sup.owner["id"]
+    sup.app.home.cfg.swlink_relay_dms = False
+    sup.dm(sup.mira, "hello?")
+    assert sup.said(sup.owner) == []
+
+
+def test_dms_missed_while_closed_reach_the_owner_in_one_message(sup):
+    sup.go_live()
+    sup.fake.owner_id = sup.owner["id"]
+    bot = sup.fake.bot["id"]
+    no = sup.order()
+    ch_m, ch_j = sup.fake._open_dm(sup.mira["id"])["id"], sup.fake._open_dm(sup.jon["id"])["id"]
+    msgs = [Message(id="301", channel_id=ch_m, author_id=sup.mira["id"], author_name="Mira", content="are you there?"),
+            Message(id="302", channel_id=ch_j, author_id=sup.jon["id"], author_name="Jon", content=no),
+            Message(id="303", channel_id=ch_j, author_id=sup.jon["id"], author_name="Jon", content="thanks!")]
+    sup.app.on_missed(msgs, bot)
+    relayed = [t for t in sup.said(sup.owner) if "while SWLink was closed" in t]
+    assert len(relayed) == 1 and "are you there?" in relayed[0] and "thanks!" in relayed[0] and no not in relayed[0]
+    sup.app.on_missed(msgs, bot)                                      # read again: nothing new, no repeat
+    assert len([t for t in sup.said(sup.owner) if "while SWLink was closed" in t]) == 1

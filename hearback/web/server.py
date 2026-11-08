@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from hearback import __version__, actions, editor, feedback, review
+from hearback import __version__, actions, editor, feedback, review, templates
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
@@ -177,6 +177,7 @@ class App:
         self._member_ids_cache: dict[str, tuple[float, set[str] | None]] = {}
         self._dm_peers: dict[str, tuple[float, dict | None]] = {}     # DM channel id -> the person at the other end
         self._bot_id = self._bot_name = ""
+        self._owner = ""                        # the server owner: DMs nobody else answers are relayed to them
         self.routes = self._build_routes()
 
     # ---- the open workspace (what the forum, approvals, supporters, logs and forum-id pages show)
@@ -376,6 +377,8 @@ class App:
                      or self._codes_dm(msg.author_id, msg.channel_id, msg.content))):
             self.inbox.add(msg)      # kept like any DM: the chat shows it, and it names who the conversation is with
             return
+        if msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id:
+            self._relay_dms([msg])
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
             self.home.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
@@ -388,17 +391,73 @@ class App:
         orders = 0
         held = {(o.channel_id, o.id) for o in msgs if self.inbox.has(o.channel_id, o.id)}
         fresh = [m for m in msgs if (m.channel_id, m.id) not in held]
+        relay: list[Message] = []
         for m in fresh:
             answered = any(o.channel_id == m.channel_id and (o.is_bot or o.author_id == bot_id)
                            and (o.channel_id, o.id) in held
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
-            if (not answered and not m.is_bot and m.author_id != bot_id
-                    and (self._supporter_dm(m.author_id, m.channel_id, m.content)
-                         or self._codes_dm(m.author_id, m.channel_id, m.content))):
-                orders += 1
+            if not m.is_bot and m.author_id != bot_id:
+                if (not answered and (self._supporter_dm(m.author_id, m.channel_id, m.content)
+                                      or self._codes_dm(m.author_id, m.channel_id, m.content))):
+                    orders += 1
+                else:
+                    relay.append(m)
             self.bot.inbox.add(m)
+        if relay:
+            self._relay_dms(relay, missed=True)
         if fresh:
             self.home.ledger.event("bot:swlink", "dm_catchup", None, {"messages": len(fresh), "orders": orders})
+
+    def _owner_id(self) -> str:
+        """Who hears about DMs: the owner of the home server (one REST call, kept once known), else the first of
+        [discord] approvers; "" when neither is known."""
+        if not self._owner and self.home.cfg.guild_id:
+            try:
+                self._owner = str(self.client().request("GET", "/guilds/%s" % self.home.cfg.guild_id).get("owner_id") or "")
+            except (ApiError, HearbackError, AttributeError):
+                pass
+        return self._owner or (self.home.cfg.approvers[0] if self.home.cfg.approvers else "")
+
+    def _relay_dms(self, msgs: Sequence[Message], missed: bool = False) -> None:
+        """DMs to the bot that no fixed flow answered reach the owner as a DM from the bot (a DM rings their phone).
+        The owner's own DMs are not relayed. Off with `[swlink] relay_dms = false`."""
+        if not self.home.cfg.swlink_relay_dms:
+            return
+        owner = self._owner_id()
+        msgs = [m for m in msgs if str(m.author_id) != owner]
+        if not owner or not msgs:
+            return
+        lang, tdir = self.home.cfg.language, self.home.cfg.templates_dir
+        empty = "(没有文字，可能是图片或文件，去 SWLink 聊天页看)" if lang == "zh" else "(no text: maybe a picture or file; see SWLink chat)"
+
+        def who(m: Message) -> str:
+            name = templates.sanitize(m.author_name or "?", 40)
+            return "%s（<@%s>）" % (name, m.author_id) if lang == "zh" else "%s (<@%s>)" % (name, m.author_id)
+
+        def body(m: Message) -> str:
+            return templates.defang_mentions((m.content or "").strip()[:1500]) or empty
+
+        if missed:
+            lines = ["%s：%s" % (who(m), body(m)) if lang == "zh" else "%s: %s" % (who(m), body(m)) for m in msgs]
+            texts, cur = [], ""
+            for line in lines:
+                if cur and len(cur) + len(line) > 1500:
+                    texts.append(cur)
+                    cur = ""
+                cur = cur + "\n" + line if cur else line
+            texts.append(cur)
+            texts = [templates.render("dm_relay_missed", lang, tdir, text=templates.trusted(t)) for t in texts]
+        else:
+            texts = [templates.render("dm_relay", lang, tdir, who=templates.trusted(who(m)), text=templates.trusted(body(m)))
+                     for m in msgs]
+        try:
+            client = self._client_factory()
+            ch = SupporterBot.dm_channel(client, owner)
+            for t in texts:
+                SupporterBot.say(client, ch, t)
+            self.home.ledger.event("bot:swlink", "dm_relay", None, {"messages": len(msgs), "missed": missed})
+        except HearbackError as e:
+            self.home.ledger.event("bot:swlink", "dm_relay_error", None, {"error": scrub(e)[:300]})
 
     def _supporter_dm(self, author_id: str, channel_id: str, content: str) -> bool:
         """An order-number DM goes to one workspace whose supporter DM handling is on: with several, the first whose

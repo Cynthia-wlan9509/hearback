@@ -132,6 +132,8 @@ EN: dict[str, str] = {
         "This order number was already used in another server. One order works in one server only. "
         "If this looks wrong, please contact the server owner."),
     "supporter_note_elsewhere": "[SWLink] $who sent order $order, but it is already used in $server.",
+    "dm_relay": "[SWLink] $who sent the bot a DM:\n$text",
+    "dm_relay_missed": "[SWLink] DMs to the bot while SWLink was closed:\n$text",
     "supporter_try_other": (
         "Thank you! This order is below what this server needs for the supporter role, but it does count in another "
         "server ($server). Join that server and send the order number to the bot there."),
@@ -233,6 +235,8 @@ ZH: dict[str, str] = {
     "supporter_note_left": "[SWLink] $who 在订单 $order 查完之前离开了服务器，这次核对已取消。",
     "supporter_claimed_elsewhere": "这个订单号已经在另一个服务器用过了，一个订单只能用在一个服务器。有问题请联系群主。",
     "supporter_note_elsewhere": "[SWLink] $who 发来订单 $order，但它已经在 $server 用过了。",
+    "dm_relay": "📩 $who 私信了机器人：\n$text",
+    "dm_relay_missed": "📩 SWLink 没开时，有人私信了机器人：\n$text",
     "supporter_try_other": "谢谢支持！这笔订单不够这个服务器的支持者身份组，但可以在另一个服务器（$server）领：加入那个服务器，把订单号私信给那边的机器人。",
     "codes_ok": ("你这台手机（本机码 $device）的授权码在下一条消息里，单独一条。\n"
                  "长按那条消息 → 复制，回到游戏点「粘贴授权码」→「验证并进入」。这个码只能这台手机用，请不要外传。"),

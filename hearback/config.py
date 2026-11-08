@@ -88,6 +88,7 @@ class Config:
     language: str = "en"
     swlink_hourly_cap: int = 60      # [swlink] hourly_cap: model calls (replies and drafts) per hour
     swlink_autostart: bool = False   # [swlink] autostart: connect the bot when `hearback web` starts
+    swlink_relay_dms: bool = True    # [swlink] relay_dms: DMs to the bot that SWLink does not answer itself reach the owner
     swlink_workspaces: list[str] = field(default_factory=list)   # [swlink] workspaces: other folders, same bot
     codes: dict = field(default_factory=dict)                       # [codes]: see hearback/codes.py
     welcome: dict = field(default_factory=dict)                     # [welcome]: see hearback/welcome.py
@@ -203,6 +204,10 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     if not isinstance(autostart, bool):
         raise HearbackError("[swlink] autostart must be true or false")
     cfg.swlink_autostart = autostart
+    relay = (raw.get("swlink") or {}).get("relay_dms", True)
+    if not isinstance(relay, bool):
+        raise HearbackError("[swlink] relay_dms must be true or false")
+    cfg.swlink_relay_dms = relay
     spaces = (raw.get("swlink") or {}).get("workspaces", [])
     if not isinstance(spaces, list) or not all(isinstance(x, str) and x.strip() for x in spaces):
         raise HearbackError("[swlink] workspaces must be a list of folder paths")
