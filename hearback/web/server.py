@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from hearback import __version__, actions, editor, feedback, review, templates
+from hearback import __version__, actions, editor, feedback, games, review, templates
 from hearback.agents import AgentStore
 from hearback.chatbot import (BotRuntime, Chatbot, Inbox, Message, RuleStore, avatar_url, build_messages,
                               build_polish, clean_polish, display_name, message_from_rest)
@@ -132,6 +132,8 @@ class Workspace:
         self.welcome = Welcome(cfg.welcome or {}, cfg.root, cfg.data_dir, self.ledger)
         self.forums = feedback.ForumSettings(cfg.data_dir)
         self.sync_lock = threading.Lock()    # one pull from Discord at a time per server
+        self.hook = games.DmHook(cfg.dm_hook or {}, runner=app._code_runner)
+        self.restore = games.RoleRestore(cfg.data_dir)
 
 
 class App:
@@ -178,6 +180,8 @@ class App:
         self._dm_peers: dict[str, tuple[float, dict | None]] = {}     # DM channel id -> the person at the other end
         self._bot_id = self._bot_name = ""
         self._owner = ""                        # the server owner: DMs nobody else answers are relayed to them
+        self._pending = games.Pending(clock)    # order numbers waiting for "which game?" (several games, one server)
+        self._ticks = threading.Event()
         self.routes = self._build_routes()
 
     # ---- the open workspace (what the forum, approvals, supporters, logs and forum-id pages show)
@@ -289,13 +293,24 @@ class App:
         return c
 
     def start_background(self) -> None:
-        """Supporter retry loops of every workspace (REST only, whichever workspace the page has open)."""
+        """Supporter retry loops of every workspace (REST only, whichever workspace the page has open), and the
+        [dm_hook] ticks (the owner's program gets {"tick": true} every few minutes to do its own chores)."""
         for ws in self.spaces:
             ws.supporter_bot.start()
+            if ws.hook.tick_minutes:
+                threading.Thread(target=self._tick_loop, args=(ws,), daemon=True, name="dm-hook-tick").start()
 
     def stop_background(self) -> None:
+        self._ticks.set()
         for ws in self.spaces:
             ws.supporter_bot.stop()
+
+    def _tick_loop(self, ws: "Workspace") -> None:
+        while not self._ticks.wait(ws.hook.tick_minutes * 60):
+            try:
+                ws.hook.call({"tick": True})
+            except HearbackError as e:
+                ws.ledger.event("bot:swlink", "dm_hook_error", None, {"error": scrub(e)[:300]})
 
     # ---- plumbing
     def _token(self) -> str:
@@ -374,7 +389,8 @@ class App:
         (fixed template replies, no model) when that is switched on; everything else follows the channel rules."""
         if (msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id
                 and (self._supporter_dm(msg.author_id, msg.channel_id, msg.content)
-                     or self._codes_dm(msg.author_id, msg.channel_id, msg.content))):
+                     or self._codes_dm(msg.author_id, msg.channel_id, msg.content)
+                     or self._hook_dm(msg.author_id, msg.channel_id, msg.content))):
             self.inbox.add(msg)      # kept like any DM: the chat shows it, and it names who the conversation is with
             return
         if msg.kind == "dm" and not msg.is_bot and msg.author_id != bot_id:
@@ -398,7 +414,8 @@ class App:
                            and o.id.isdigit() and m.id.isdigit() and int(o.id) > int(m.id) for o in msgs)
             if not m.is_bot and m.author_id != bot_id:
                 if (not answered and (self._supporter_dm(m.author_id, m.channel_id, m.content)
-                                      or self._codes_dm(m.author_id, m.channel_id, m.content))):
+                                      or self._codes_dm(m.author_id, m.channel_id, m.content)
+                                      or self._hook_dm(m.author_id, m.channel_id, m.content))):
                     orders += 1
                 else:
                     relay.append(m)
@@ -466,18 +483,91 @@ class App:
         server)."""
         live = [ws for ws in self.spaces if ws.supporter_bot.dm_on()]
         nums = extract_order_numbers(content)
-        if not live or not nums:
+        uid = str(author_id)
+        if not live:
             return False
-        ws = live[0] if len(live) == 1 else self._order_space(live, str(author_id), nums[0])
+        if self._games(live):
+            return self._game_order(live, uid, channel_id, content, nums)
+        if not nums:
+            return False
+        ws = live[0] if len(live) == 1 else self._order_space(live, uid, nums[0])
+        return self._take_order(ws, uid, channel_id, nums[0])
+
+    # ---- several games in one server (one workspace each; see hearback/games.py)
+    @staticmethod
+    def _games(spaces: Sequence["Workspace"]) -> bool:
+        """True when these workspaces are games of one server: two or more, one guild, each with game_keys."""
+        guilds = {ws.cfg.guild_id for ws in spaces}
+        return len(spaces) > 1 and len(guilds) == 1 and "" not in guilds and all(ws.cfg.swlink_game_keys for ws in spaces)
+
+    @staticmethod
+    def _keys(ws: "Workspace") -> list[str]:
+        return ws.cfg.swlink_game_keys
+
+    def _say(self, ws: "Workspace", channel_id: str, text: str) -> None:
+        try:
+            ws.supporter_bot.say(self._client_factory(), channel_id, text)
+        except HearbackError as e:
+            ws.ledger.event("bot:swlink", "dm_reply_failed", None, {"error": scrub(e)[:200]})
+
+    def _ask_game(self, spaces: Sequence["Workspace"], what: str) -> str:
+        labels = "、".join(games.label(self._keys(ws)) for ws in spaces)
+        if self.home.cfg.language == "zh":
+            return ("这笔订单还没写是给哪个项目的。直接回我项目编号就行：%s。" % labels if what == "order" else
+                    "你有好几个项目的身份，这个本机码是哪个项目的？请在本机码前面加上编号再发一次，比如「%s XXXX-XXXX-XXXX-XXXX」。项目编号：%s。"
+                    % (self._keys(spaces[0])[0], labels))
+        labels = ", ".join(games.label(self._keys(ws)) for ws in spaces)
+        return ("Which project is this order for? Just reply with its name: %s." % labels if what == "order" else
+                "You hold roles for several projects. Send the device code again with the project's name in front: %s." % labels)
+
+    def _game_order(self, live: list["Workspace"], uid: str, channel_id: str, content: str, nums: list[str]) -> bool:
+        """An order number (or the answer naming a game for one asked about) in a server shared by several games."""
+        if not nums:
+            no = self._pending.get(uid)
+            ws = games.pick(live, content, self._keys) if no else None
+            if ws is None:
+                return False
+            self._pending.drop(uid)
+            return self._take_order(ws, uid, channel_id, no)
+        no = nums[0]
+        ws = self._claimed_in(live, no) or games.pick(live, content, self._keys)
+        if ws is None:
+            try:
+                client = live[0].supporters.make_client()
+                order = client.find_order(no) if client is not None else None
+            except HearbackError:
+                order = None
+            ws = games.pick(live, games.order_words(order), self._keys)
+        if ws is None:
+            self._pending.put(uid, no)
+            self._say(live[0], channel_id, self._ask_game(live, "order"))
+            live[0].supporters.event("bot:swlink", "supporter_ask_game", {"order": mask(no), "user": uid})
+            return True
+        self._pending.drop(uid)
+        return self._take_order(ws, uid, channel_id, no)
+
+    @staticmethod
+    def _claimed_in(spaces: Sequence["Workspace"], no: str) -> "Workspace | None":
+        for ws in spaces:
+            try:
+                if no in ws.supporters_store.load()["claims"]:
+                    return ws
+            except SupporterError:
+                continue
+        return None
+
+    def _take_order(self, ws: "Workspace", uid: str, channel_id: str, no: str) -> bool:
+        """The order goes to `ws`, unless another workspace or another bot's server already has it."""
+        author_id, content = uid, no
         others = [(o.cfg.root.name, o.supporters_store) for o in self.spaces if o is not ws] + self.peers
         for name, store in others:
             try:
-                used = nums[0] in store.load()["claims"]
+                used = no in store.load()["claims"]
             except SupporterError:
                 used = False
             if used:
-                return self._claimed_elsewhere(ws, name, str(author_id), channel_id, nums[0])
-        if self.peers and self._try_other(ws, str(author_id), channel_id, nums[0]):
+                return self._claimed_elsewhere(ws, name, str(author_id), channel_id, no)
+        if self.peers and self._try_other(ws, str(author_id), channel_id, no):
             return True
         return ws.supporter_bot.handle_dm(author_id, channel_id, content)
 
@@ -510,7 +600,21 @@ class App:
         return False
 
     def on_join(self, guild_id: str, uid: str, is_bot: bool, owner_id: str) -> None:
-        """Someone joined a server (or was found on connect): the workspace for that server sends its welcome once."""
+        """Someone joined a server (or was found on connect): roles kept for them come back (restore_roles.json), and
+        the workspace for that server sends its welcome once."""
+        for ws in self.spaces:
+            if is_bot or not ws.cfg.guild_id or str(guild_id) != ws.cfg.guild_id:
+                continue
+            due = ws.restore.due(uid)
+            if due:
+                try:
+                    p = ws.supporter_bot.member(self._client_factory(), str(guild_id), uid)
+                    have = p.role_ids if p is not None else set()
+                    missing = [r for r in due if r not in have]
+                    given, _failed = ws.supporter_bot.grant(self._client_factory(), str(guild_id), uid, missing) if missing else ([], [])
+                    ws.restore.done(uid, [r for r in due if r in have] + list(given))
+                except HearbackError as e:
+                    ws.ledger.event("bot:swlink", "restore_failed", None, {"user": uid, "error": scrub(e)[:200]})
         for ws in self.spaces:
             if ws.welcome.enabled and ws.cfg.guild_id and str(guild_id) == ws.cfg.guild_id:
                 def send(user: str, text: str) -> None:
@@ -569,6 +673,9 @@ class App:
         the owner's command. With several such workspaces, the first whose server the person is in. With several
         servers, codes from people without the role who belong elsewhere are left alone (False)."""
         live = [ws for ws in self.spaces if ws.codes.enabled]
+        hooked = [ws for ws in self.spaces if ws.hook.device_roles and ws not in live]
+        if self._games(live + hooked):
+            return self._game_code(live + hooked, str(author_id), channel_id, content)
         dev = next((d for d in (ws.codes.find(content) for ws in live) if d), "")
         if not dev:
             return False
@@ -598,6 +705,83 @@ class App:
             ws.supporter_bot.notify(client, notes)
         except HearbackError as e:
             (pick[0] if pick else live[0]).ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})
+        return True
+
+    def _code_roles(self, ws: "Workspace") -> set[str]:
+        return ({ws.codes.role_id} if ws.codes.enabled else set()) | ws.hook.device_roles
+
+    def _game_code(self, spaces: list["Workspace"], uid: str, channel_id: str, content: str) -> bool:
+        """A device code in a server shared by several games: the game named in the message, else the only game whose
+        role the member holds; several, the bot asks to name it; none, it says which role is needed first."""
+        dev = next((d for d in (ws.codes.find(content) if ws.codes.enabled else "" for ws in spaces) if d), "")
+        if not dev:
+            m = games.DEVICE_RE.search(content or "")
+            dev = m.group(0).upper() if m else ""
+        if not dev:
+            return False
+        p = self._member_in(spaces[0], uid)
+        if p is None:
+            first = next((ws for ws in spaces if ws.codes.enabled), spaces[0])
+            self._say(first, channel_id, first.codes.text("not_member"))
+            return True
+        ws = games.pick(spaces, content, self._keys)
+        if ws is None:
+            have = [w for w in spaces if self._code_roles(w) & {str(r) for r in p.role_ids}]
+            if len(have) > 1:
+                self._say(spaces[0], channel_id, self._ask_game(have, "code"))
+                return True
+            ws = have[0] if have else None
+        if ws is None:
+            zh = self.home.cfg.language == "zh"
+            self._say(spaces[0], channel_id, "要先拿到对应项目的身份，才能用本机码换授权码。先把爱发电订单号（或验证邮箱）发给我。"
+                      if zh else "You need the project's role before a device code can be answered: send your order number first.")
+            return True
+        if not ws.codes.enabled:
+            return self._run_hook(ws, p, content, channel_id)
+        try:
+            client = self._client_factory()
+            reply, code, notes = ws.codes.handle(p, dev)
+            ws.supporter_bot.say(client, channel_id, reply)
+            if code:
+                ws.supporter_bot.say(client, channel_id, code)
+            ws.supporter_bot.notify(client, notes)
+        except HearbackError as e:
+            ws.ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})
+        return True
+
+    # ---- the owner's deciding program ([dm_hook]): e-mail checks, its own device codes
+    def _hook_dm(self, author_id: str, channel_id: str, content: str) -> bool:
+        if not games.EMAIL_RE.search(content or ""):
+            return False
+        for ws in self.spaces:
+            if ws.hook.emails:
+                p = self._member_in(ws, str(author_id)) or Person(id=str(author_id))
+                return self._run_hook(ws, p, content, channel_id)
+        return False
+
+    def _run_hook(self, ws: "Workspace", p: Person, content: str, channel_id: str) -> bool:
+        payload = {"id": p.id, "name": p.name, "display": p.display, "roles": sorted(p.role_ids), "text": content,
+                   "owner_id": self._owner_id(), "guild_id": ws.cfg.guild_id}
+        try:
+            out = ws.hook.call(payload)
+        except HearbackError as e:
+            ws.ledger.event("bot:swlink", "dm_hook_error", None, {"error": scrub(e)[:300]})
+            return False          # the normal path (relay to the owner) takes it
+        try:
+            client = self._client_factory()
+            reply = out["reply"]
+            if out["grant"]:
+                _given, failed = ws.supporter_bot.grant(client, ws.cfg.guild_id, p.id, out["grant"])
+                if failed:
+                    reply = ws.supporters.reply_text("grant_failed")
+                    out["notify"] = out["notify"] + ["%s: %s" % (ws.supporters.who(p), f["kind"]) for f in failed]
+            if reply:
+                ws.supporter_bot.say(client, channel_id, reply)
+            if out["notify"]:
+                ws.supporter_bot.notify(client, out["notify"])
+            ws.ledger.event("bot:swlink", "dm_hook", None, {"user": p.id, "granted": out["grant"], "replied": bool(reply)})
+        except HearbackError as e:
+            ws.ledger.event("bot:swlink", "dm_hook_error", None, {"error": scrub(e)[:300]})
         return True
 
     def directory(self, force: bool = False) -> tuple[list[dict], str]:
@@ -1110,8 +1294,17 @@ class App:
         known = data["forums"] or ({self.cfg.forum_id: {"name": "", "position": 0, "tags": data["tags"]}}
                                    if self.cfg.forum_id else {})
         rows = sorted(known.items(), key=lambda kv: (kv[1].get("position", 0), int(kv[0])))
-        return [{"id": f, "name": v.get("name", ""), "tags": list((v.get("tags") or {}).values()),
-                 "agent": self._forum_agent_id(f), "hidden": f in hidden} for f, v in rows]
+        mixed = not self.cfg.forum_ids and any(ws.cfg.forum_ids for ws in self.spaces)   # one inbox for several games
+        return [{"id": f, "name": (self._game_of_forum(f) + " · " if mixed and self._game_of_forum(f) else "") + v.get("name", ""),
+                 "tags": list((v.get("tags") or {}).values()), "agent": self._forum_agent_id(f), "hidden": f in hidden}
+                for f, v in rows]
+
+    def _game_of_forum(self, forum: str) -> str:
+        """Which game a forum belongs to (the last of its game_keys), for an inbox that shows several games."""
+        for ws in self.spaces:
+            if forum in ws.cfg.forum_ids and ws.cfg.swlink_game_keys:
+                return ws.cfg.swlink_game_keys[-1]
+        return self.home.cfg.swlink_game_keys[-1] if self.home.cfg.swlink_game_keys else ""
 
     def _forum_agent_id(self, forum: str) -> str:
         """A forum's own choice, else the bug desk for the configured bug forum, else the general agent."""
@@ -1294,13 +1487,26 @@ class App:
             raise ApiError(404, "no such post")
         picked = ids[:feedback.HANDOFF_MAX]
         guild = str(data.get("guild_id") or self.cfg.guild_id or "")
-        entry = self.cfg.swlink_project_dir
-        project = str(Path(entry) if Path(entry).is_absolute() else (self.cfg.root / entry).resolve()) if entry else ""
-        text = feedback.handoff_text(self.ledger, data, picked, project=project, zh=self.cfg.language == "zh",
+        threads = data["threads"]
+        text = feedback.handoff_text(self.ledger, data, picked, zh=self.cfg.language == "zh",
+                                     project=lambda tid: self._project_for(str(threads[tid].get("forum_id") or "")),
                                      forum_names={r["id"]: r["name"] for r in self._forum_rows(data)},
                                      staff=feedback.staff_ids(data, self.cfg.approvers),
                                      link=lambda tid: "https://discord.com/channels/%s/%s" % (guild, tid) if guild else "")
         return 200, {"text": text, "count": len(picked), "left": len(ids) - len(picked)}
+
+    @staticmethod
+    def _project_dir(cfg: Config) -> str:
+        entry = cfg.swlink_project_dir
+        return str(Path(entry) if Path(entry).is_absolute() else (cfg.root / entry).resolve()) if entry else ""
+
+    def _project_for(self, forum: str) -> str:
+        """The code folder for a post: the game whose [discord] forum_ids list its forum (several games in one
+        server), else the open workspace's."""
+        for ws in self.spaces:
+            if forum and forum in ws.cfg.forum_ids and ws.cfg.swlink_project_dir:
+                return self._project_dir(ws.cfg)
+        return self._project_dir(self.cfg)
 
     def api_feedback_send(self, q: Request) -> tuple[int, Any]:
         """A person pressed Send: that is the approval, so the reply and the tags go out at once (through the queue,
@@ -1634,6 +1840,8 @@ class App:
         known = self.directory()[0] if self.token_state()["set"] else []     # live guilds, else REST cached 60 s
         names = {str(g["id"]): str(g.get("name") or "") for g in known}
         items = [{"id": str(i), "name": names.get(ws.cfg.guild_id) or ws.cfg.root.name, "folder": ws.cfg.root.name,
+                  "game": games.label(ws.cfg.swlink_game_keys[:1]) + (" · " + ws.cfg.swlink_game_keys[-1]
+                                                                       if len(ws.cfg.swlink_game_keys) > 1 else ""),
                   "guild_id": ws.cfg.guild_id, "forum_id": ws.cfg.forum_id, "home": ws is self.home,
                   "current": ws is self.cur} for i, ws in enumerate(self.spaces)]
         own = names.get(self.home.cfg.guild_id) or ""

@@ -244,7 +244,7 @@ function serverFoot() {
   }
   const sel = h("select", { "aria-label": t("ws.label"), onchange: (ev) => openSpace(ev.target.value) },
     SPACES.items.map((w) => h("option", { value: w.id, selected: w.current },
-      w.name + (w.home ? t("ws.home") : "") + (w.other && !w.running ? t("ws.off") : ""))));
+      (w.game || w.name) + (w.home ? t("ws.home") : "") + (w.other && !w.running ? t("ws.off") : ""))));
   const box = h("label", { class: "foot", title: t("ws.label") + " · " + botHint(b) }, avatar, who, sel);
   const wrap = h("div", { class: "foot-wrap" }, box);
   SPACES.broken.forEach((x) => wrap.prepend(h("div", { class: "small-text space-broken", title: x.error }, t("ws.broken", { f: x.folder }))));

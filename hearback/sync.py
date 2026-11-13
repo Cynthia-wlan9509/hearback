@@ -338,6 +338,9 @@ def sync_all(client: DiscordClient, ledger: Ledger, cfg: Config, *, download: bo
     if not guild_id:
         raise HearbackError("guild_id is not set: add the server id in Settings")
     channels = forum_channels(client, guild_id)
+    only = set(getattr(cfg, "forum_ids", None) or [])      # a server shared by several games: this game's forums
+    if only:
+        skip = set(skip) | {str(f["id"]) for f in channels if str(f["id"]) not in only}
     forums = [f for f in channels if str(f["id"]) not in skip]
     for f in forums:
         f.setdefault("guild_id", guild_id)

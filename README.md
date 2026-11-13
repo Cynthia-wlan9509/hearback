@@ -153,6 +153,11 @@ First run: **Settings** (paste the bot token, follow the Developer Portal steps,
 press Start). Add a model under **Models** if you want the AI's help. Then **All feedback** is the page you work in.
 `hearback web --no-browser --port 0` prints the link instead of opening it and picks a free port.
 
+Several games in one server: give each game its own folder (listed under `[swlink] workspaces`) with `game_keys`
+(the words that name it) and `[discord] forum_ids` (its forums). One bot serves them all: role requests and device
+codes go to the game the message, the order or the member's roles point at, and the bot asks when it cannot tell.
+The home folder's **All feedback** shows every game's posts, each forum labelled with its game.
+
 Want to look around first? `hearback web --demo` (add `--lang zh` for Chinese data) opens the same console on made-up
 data: a fake server, forums and a queue. It needs no Discord, no key and no network, saves nothing, and its
 temporary folder disappears when you stop it. Use it to try the pages, and for screenshots and screen recordings.

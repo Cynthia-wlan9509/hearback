@@ -85,7 +85,7 @@ hearback demo --lang zh
 SWLink 是 Hearback 里**可选、需要自己开启**的部分：一个本地网页，加一个常驻的聊天机器人。你在网页里决定机器人在哪些服务器、
 频道、私信里回答，用哪个**智能体**（系统提示词），用哪个**大模型**（你自己的 API 密钥：Anthropic、OpenAI、DeepSeek，
 或任何兼容 OpenAI / Anthropic 接口的中转站），以及模式是**关闭**、**起草后等你批准**还是**自动回复**。
-论坛帖子有自己的页面**全部反馈**，打开控制台就是它。完整的操作说明见 [SWLink 使用手册](docs/swlink-manual.zh-CN.md)。
+论坛帖子有自己的页面**全部反馈**，打开控制台就是它。完整的操作说明见 [SWLink 使用手册](docs/swlink-manual.zh-CN.md)（一个群放几款游戏：见手册第 17 节）。
 
 ```
 pip install -e ".[all]"        # 或只装需要的：llm、bot、keyring、mcp

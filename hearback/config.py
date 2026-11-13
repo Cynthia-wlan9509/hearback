@@ -94,6 +94,9 @@ class Config:
     welcome: dict = field(default_factory=dict)                     # [welcome]: see hearback/welcome.py
     swlink_others: list[str] = field(default_factory=list)          # [swlink] others: SWLink folders of other bots
     swlink_project_dir: str = ""     # [swlink] project_dir: the game's code, named in the text for a coding assistant
+    swlink_game_keys: list[str] = field(default_factory=list)       # [swlink] game_keys: words naming this game (shared server)
+    forum_ids: list[str] = field(default_factory=list)              # [discord] forum_ids: only these forums (shared server)
+    dm_hook: dict = field(default_factory=dict)                     # [dm_hook]: see hearback/games.py
 
     # ---- paths
     @property
@@ -220,6 +223,13 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     if not isinstance(project, str):
         raise HearbackError("[swlink] project_dir must be a folder path")
     cfg.swlink_project_dir = project.strip()
+    from hearback.games import parse_dm_hook, parse_keys
+    cfg.swlink_game_keys = parse_keys((raw.get("swlink") or {}).get("game_keys"))
+    only = d.get("forum_ids", [])
+    if not isinstance(only, list) or not all(_s(x).isdigit() for x in only):
+        raise HearbackError("[discord] forum_ids must be a list of forum channel ids")
+    cfg.forum_ids = [_s(x) for x in only]
+    cfg.dm_hook = parse_dm_hook(raw.get("dm_hook"))
     from hearback.codes import parse_codes
     cfg.codes = parse_codes(raw.get("codes"))
     from hearback.welcome import parse_welcome
