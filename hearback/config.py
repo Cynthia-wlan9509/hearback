@@ -47,6 +47,11 @@ need-info = "Need info"
 fixed-pending-release = "Fixed, awaiting release"
 released = "Released"
 
+# Optional: reply automatically when a moderator-only forum tag is added to a post (once per post and tag).
+# $author, $title and $download (the first variant's download text) can be used in the text.
+# [tag_replies]
+# "Fixed, awaiting release" = "This is fixed in the new build. $download"
+
 # One table per build variant you ship. `tag` is the forum tag reporters pick; `download`
 # is where they get the fixed build (shown in release notifications).
 [variants.free]
@@ -97,6 +102,7 @@ class Config:
     swlink_game_keys: list[str] = field(default_factory=list)       # [swlink] game_keys: words naming this game (shared server)
     forum_ids: list[str] = field(default_factory=list)              # [discord] forum_ids: only these forums (shared server)
     dm_hook: dict = field(default_factory=dict)                     # [dm_hook]: see hearback/games.py
+    tag_replies: dict[str, str] = field(default_factory=dict)       # [tag_replies]: forum tag name -> reply text (string.Template)
 
     # ---- paths
     @property
@@ -192,6 +198,7 @@ def parse_config(raw: Mapping[str, Any], root: Path, path: Path | None = None) -
     except (TypeError, ValueError):
         raise HearbackError("[discord] send_delay must be a number")
     cfg.status_tags = {_s(k): _s(v) for k, v in (raw.get("status_tags") or {}).items() if _s(v)}
+    cfg.tag_replies = {_s(k): _s(v) for k, v in (raw.get("tag_replies") or {}).items() if _s(k) and _s(v)}
     for name, v in (raw.get("variants") or {}).items():
         v = v if isinstance(v, dict) else {}
         cfg.variants[str(name)] = Variant(str(name), tag=_s(v.get("tag")), download=_s(v.get("download")))

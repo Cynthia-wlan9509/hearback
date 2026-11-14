@@ -587,12 +587,16 @@ function compose(d, f) {
   if (FB.drafts[d.id] === undefined) FB.drafts[d.id] = d.ai && !d.ai_stale && d.state === "todo" ? (d.ai.reply_draft || "") : "";
   const sel = chosenTags(d);
   const hints = ai ? (ai.tags_add || []).filter((x) => !sel.includes(x)) : [];
+  const replies = d.tag_replies || {};
   const ta = h("textarea", { id: "reply", placeholder: t("fb.placeholder"), "aria-label": t("fb.placeholder"), value: FB.drafts[d.id] });
   ta.addEventListener("input", () => { FB.drafts[d.id] = ta.value; updateSend(d); });
   ta.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.ctrlKey) { ev.preventDefault(); sendPost(d); } });
   const tagRow = d.forum_tags.length ? h("div", { class: "tags" }, d.forum_tags.map((x) => h("button", {
-    class: "tag" + (sel.includes(x) ? " on" : "") + (hints.includes(x) ? " hint" : ""), title: hints.includes(x) ? t("fb.tagHint") : null,
-    onclick: () => { keepDraft(); FB.chosen[d.id] = sel.includes(x) ? sel.filter((y) => y !== x) : sel.concat(x); drawRight(); } }, x))) : null;
+    class: "tag" + (sel.includes(x) ? " on" : "") + (hints.includes(x) ? " hint" : ""), title: hints.includes(x) ? t("fb.tagHint") : (replies[x] ? t("fb.tagReply") : null),
+    onclick: () => {
+      keepDraft();
+      if (replies[x] && !sel.includes(x) && !d.tags.includes(x) && !(FB.drafts[d.id] || "").trim()) FB.drafts[d.id] = replies[x];   // [tag_replies]: editable
+      FB.chosen[d.id] = sel.includes(x) ? sel.filter((y) => y !== x) : sel.concat(x); drawRight(); } }, x))) : null;
   const aiBox = ai ? h("div", { class: "ai" }, cat(), h("div", { class: "ai-txt" },
     ai.summary ? h("div", null, h("b", null, t("fb.ai.judge")), ai.summary) : null,
     ai.likely_cause ? h("div", null, h("b", null, t("fb.ai.cause")), ai.likely_cause) : null,

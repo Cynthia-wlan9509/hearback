@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import string
 import subprocess
 import sys
 import threading
@@ -36,11 +37,12 @@ from hearback.ledger import STATUSES, Ledger
 from hearback.llm import (EMPTY_TEXT_ERROR, PRESETS, LLMError, LLMStore, complete_any, register_secret, scrub,
                           scrub_obj, take_usage)
 from hearback.queue import Queue
+from hearback.tagreply import TagReplyStore
 from hearback.supporters import (Person, SupporterBot, SupporterError, Supporters, SupporterStore, check_id,
                                  check_order_no, clean_settings, extract_order_numbers, mask, match_remarks,
                                  parse_amount)
 from hearback.sync import format_delta, sync as run_sync, sync_all
-from hearback.util import HearbackError, atomic_write_text, ensure_data_dir, is_image, setup_stdio
+from hearback.util import HearbackError, atomic_write_text, chunks_for, ensure_data_dir, is_image, setup_stdio
 from hearback.welcome import Welcome
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -160,6 +162,7 @@ class App:
         self.usage = feedback.Usage(cfg.data_dir, clock)
         self.rules = RuleStore(cfg.data_dir)
         self.inbox = Inbox(cfg.data_dir)
+        self.tag_store = TagReplyStore(cfg.data_dir)     # [tag_replies]: which (post, tag) already got its reply
         self._dir_cache: tuple[float, list[dict], str] | None = None
         self.home = Workspace(self, cfg, supporters_store=supporters_store, afdian_opener=afdian_opener)
         self.cur = self.home
@@ -171,7 +174,8 @@ class App:
                            self._send_auto, hourly_cap=cfg.swlink_hourly_cap, clock=clock)
         self.runtime = runtime or BotRuntime(self._token, self.on_message, self._bot_state,
                                                  self.on_missed, lambda: self.bot.inbox.last_dm_ids(), self.on_join,
-                                                 lambda: any(ws.welcome.enabled for ws in self.spaces))
+                                                 lambda: any(ws.welcome.enabled for ws in self.spaces),
+                                                 on_thread_tags=self.on_thread_tags)
         self.others = other_folders(cfg)        # SWLink folders of other bots: shared order claims, the server picker
         self.peers = self._load_peers(cfg)      # (folder name, supporter store) of those folders
         self._start_other = start_other or start_folder
@@ -398,6 +402,113 @@ class App:
         res = self.bot.handle(msg, bot_id)
         if res.get("action") == "error":
             self.home.ledger.event("bot:swlink", "error", msg.channel_id, {"error": scrub(res.get("error", ""))[:300]})
+
+    # ---- [tag_replies]: a status tag put on a post posts the configured reply there, once
+    def _tag_space(self, forum: str) -> "Workspace | None":
+        """The workspace a forum belongs to: the one whose forum_ids lists it, else the one whose forum_id is it."""
+        forum = str(forum or "")
+        if not forum:
+            return None
+        return (next((ws for ws in self.spaces if forum in ws.cfg.forum_ids), None)
+                or next((ws for ws in self.spaces if forum == ws.cfg.forum_id), None))
+
+    @staticmethod
+    def _tag_template(ws: "Workspace", tag: str) -> str:
+        t = ws.cfg.tag_replies
+        if tag in t:
+            return t[tag]
+        return next((v for k, v in t.items() if k.lower() == tag.lower()), "")
+
+    def _render_tag_reply(self, ws: "Workspace", rec: dict | None, template: str) -> str:
+        """$author, $title and $download filled in (other $words stay as written), pings defanged, capped."""
+        variants = list(ws.cfg.variants.values())
+        text = string.Template(template).safe_substitute(
+            author=str((rec or {}).get("author") or ""), title=str((rec or {}).get("title") or ""),
+            download=variants[0].download if variants else "")
+        return templates.defang_mentions(text).strip()[:SEND_LIMIT]
+
+    def on_thread_tags(self, guild_id: str, parent_id: str, thread_id: str, before_tag_ids: list[str] | None,
+                       after_tag_ids: list[str], forum_tags: dict | None) -> None:
+        """Gateway callback (worker thread): the tags of a forum post changed. For every tag that was added, has a
+        [tag_replies] text and can only be applied by moderators, post the text in the post once. Never raises."""
+        ws = self._tag_space(parent_id)
+        if ws is None or not ws.cfg.tag_replies:
+            return
+        try:
+            self._thread_tags(ws, str(parent_id), str(thread_id), before_tag_ids, list(after_tag_ids or []), forum_tags)
+        except Exception as e:     # nothing here may reach the gateway
+            try:
+                ws.ledger.event("bot:swlink", "tag_reply_failed", str(thread_id), {"error": scrub(e)[:300]})
+            except Exception:
+                pass
+
+    def _thread_tags(self, ws: "Workspace", forum: str, tid: str, before_ids: list[str] | None, after_ids: list[str],
+                     forum_tags: dict | None) -> None:
+        data = ws.ledger.load()
+        rec = data["threads"].get(tid)
+        if forum_tags:
+            names = {str(i): str(v.get("name") or "") for i, v in forum_tags.items()}
+        else:
+            known = ((data.get("forums") or {}).get(forum) or {}).get("tags") or data.get("tags") or {}
+            names = {str(i): str(n) for i, n in known.items()}
+        after = [names[i] for i in map(str, after_ids) if names.get(i)]
+        if before_ids is not None:
+            before = [names[i] for i in map(str, before_ids) if names.get(i)]
+        elif rec is not None:
+            before = [str(t) for t in rec.get("tags") or []]
+        else:
+            return                       # nothing to compare with: do nothing rather than guess
+        moderated: dict[str, bool] | None = (
+            {str(v.get("name")): bool(v.get("moderated")) for v in forum_tags.values()} if forum_tags else None)
+        todo = [t for t in after if t not in before and self._tag_template(ws, t)]
+        sent_any = False
+        for tag in todo:
+            if moderated is None:       # the gateway did not say: look the forum up once
+                try:
+                    live = self.client().request("GET", "/channels/%s" % forum)
+                    moderated = {str(t.get("name")): bool(t.get("moderated")) for t in live.get("available_tags") or []}
+                except Exception as e:
+                    moderated = {}
+                    ws.ledger.event("bot:swlink", "tag_reply_skipped", tid,
+                                    {"tag": tag, "reason": "could not read the forum's tags: " + scrub(e)[:200]})
+            if not moderated.get(tag):
+                if tag in moderated:      # players could otherwise mark their own post as fixed
+                    ws.ledger.event("bot:swlink", "tag_reply_skipped", tid, {"tag": tag, "reason": "tag not moderated"})
+                continue
+            if not self.tag_store.claim(tid, tag, "gateway"):
+                continue
+            sent: list[dict] = []
+            try:
+                if sent_any and ws.cfg.send_delay > 0:
+                    time.sleep(ws.cfg.send_delay)
+                chunks = chunks_for(self._render_tag_reply(ws, rec, self._tag_template(ws, tag)))
+                client = self.client()
+                try:
+                    for c in chunks:
+                        sent.append(client.request("POST", "/channels/%s/messages" % tid,
+                                                   body={"content": c, "allowed_mentions": {"parse": []}}))
+                finally:
+                    if sent:
+                        ws.ledger.add_posted(tid, actions._posted_entries(sent, chunks, [], ""))
+                        self.tag_store.set_message(tid, tag, str(sent[0].get("id", "")))
+                if not sent:              # the text came out empty
+                    self.tag_store.drop(tid, tag)
+                    continue
+                sent_any = True
+                statuses = {v: k for k, v in ws.cfg.status_tags.items()}
+                if tag in statuses and rec is not None:
+                    ws.ledger.update_triage(tid, {"status": statuses[tag]}, actor="bot:swlink")
+                ws.ledger.event("bot:swlink", "tag_reply", tid, {"tag": tag, "message_id": str(sent[0].get("id", ""))})
+            except Exception as e:
+                if not sent:
+                    self.tag_store.drop(tid, tag)          # nothing went out: a later change may try again
+                ws.ledger.event("bot:swlink", "tag_reply_failed", tid, {"tag": tag, "error": scrub(e)[:300]})
+        if rec is not None and after != list(rec.get("tags") or []):
+            with ws.ledger.locked():
+                data = ws.ledger.load()
+                if tid in data["threads"]:
+                    data["threads"][tid]["tags"] = after
+                    ws.ledger.save(data)
 
     def on_missed(self, msgs: list[Message], bot_id: str) -> None:
         """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
@@ -1410,7 +1521,10 @@ class App:
         paths = review.thread_files(self.ledger, rec)
         ai = tri.get("ai") if isinstance(tri.get("ai"), dict) else None
         guild = str(data.get("guild_id") or self.cfg.guild_id or "")
-        return 200, {"id": tid, "forum": forum, "title": rec.get("title", ""), "author": rec.get("author", ""),
+        tws = self._tag_space(forum)
+        tag_replies = ({t: self._render_tag_reply(tws, rec, self._tag_template(tws, t))
+                        for t in review.forum_tags(data, tid) if self._tag_template(tws, t)} if tws is not None else {})
+        return 200, {"id": tid, "forum": forum, "tag_replies": tag_replies, "title": rec.get("title", ""), "author": rec.get("author", ""),
                      "created": rec.get("created", ""), "body": str(rec.get("body") or "")[:8000], "files": post_files,
                      "messages": messages[-DETAIL_REPLIES:], "more": max(0, len(messages) - DETAIL_REPLIES), "tags": list(rec.get("tags") or []),
                      "forum_tags": review.forum_tags(data, tid), "agent": self._forum_agent_id(forum),
@@ -1523,14 +1637,28 @@ class App:
         if bad:
             raise ApiError(400, "no forum tag named %s. Available: %s" % (", ".join(map(repr, bad)), ", ".join(known.values())))
         add, remove = [known[n.lower()] for n in add], [known[n.lower()] for n in remove]
+        ws = self._tag_space(self._home_forum(data, rec))
+        templated = [t for t in add if ws is not None and self._tag_template(ws, t)]
+        if not text and templated:        # no words of their own: the last template tag speaks
+            text = self._render_tag_reply(ws, rec, self._tag_template(ws, templated[-1]))
         made = []
         if add or remove:
             made.append(self.queue.propose("tags", actor=ACTOR, thread=tid, add=add, remove=remove, why=FEEDBACK_WHY).id)
         if text:
             made.append(self.queue.propose("reply", actor=ACTOR, thread=tid, text=text, why=FEEDBACK_WHY, force=True).id)
         self.queue.approve(made, ACTOR)
-        rep = self.queue.send(self.client(), self.ledger, forum_id=self._home_forum(data, rec), delay=self.cfg.send_delay,
-                              actor=ACTOR, ids=made)
+        # the gateway event that follows the tag change must not post the template a second time
+        claimed = [t for t in templated if self.tag_store.claim(tid, t, "send")]
+        try:
+            rep = self.queue.send(self.client(), self.ledger, forum_id=self._home_forum(data, rec), delay=self.cfg.send_delay,
+                                  actor=ACTOR, ids=made)
+        except BaseException:
+            for t in claimed:
+                self.tag_store.drop(tid, t)
+            raise
+        if rep.failed and not any(p.result.get("message_ids") for p in list(rep.sent) + list(rep.failed)):
+            for t in claimed:             # no message went out (a tag change alone may have): the gateway event can still answer
+                self.tag_store.drop(tid, t)
         if rep.failed:
             clean = [p.id for p in rep.failed if not p.result.get("message_ids")]
             if clean:                 # nothing went out and the words are still in the box: no leftovers in Waiting

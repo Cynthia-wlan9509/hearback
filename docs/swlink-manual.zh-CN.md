@@ -213,6 +213,24 @@ released = "已发布"
 
 命令行也用这张对照表：`hearback triage 帖子 --set status=investigating --tag-proposal` 和发版命令 `hearback release` 会据此起草标签变更，放进待审批。
 
+### 打标签自动回帖（`[tag_replies]`）
+
+你给一个帖子加上某个状态标签，机器人就在这个帖子里自动发一条你写好的回复，每个帖子每个标签只发一次。在 Discord 里点标签、或在「全部反馈」页点标签再发送，都管用。
+
+```
+[tag_replies]
+"已修复，新包已发" = "这个问题在新包里修好了。$download"
+"需要补充信息" = "麻烦补充一下机型和系统版本。"
+```
+
+- 左边是论坛里的标签名，右边是回复文字。文字里可以写 `$author`（发帖人名字）、`$title`（帖子标题）、`$download`（`[variants.*]` 里第一项的 `download` 文字，没有就留空）。其他的 `$词` 原样保留。@所有人 之类的提醒会被拆掉，不会真的提醒谁。
+- 论坛设置里要把这些标签设成「仅版主可应用」（Discord：论坛频道设置 → 标签 → 勾「仅限版主」）。没勾的标签机器人不会回复，免得玩家自己给帖子打上「已修复」；日志里会记一条 `tag_reply_skipped`。
+- 在「全部反馈」页加上这样的标签，回复框是空的就自动填上这段话，你可以改、可以清空；回复框里已有你写的字就用你写的。点「发送」时，机器人不会再重复发一次。
+- 已回过的记在 `.hearback/tag_replies.json`；回复发出会记一条 `tag_reply`，发失败记 `tag_reply_failed`。要重发，把这个文件里对应的那一项删掉。
+- 帖子在哪个论坛，就用哪个文件夹（工作区）的 `[tag_replies]`：看它的 `forum_id` / `forum_ids`。
+
+**English.** `[tag_replies]` maps a forum tag name to a reply text. When a moderator adds that tag to a post (in Discord, or from SWLink's feedback page), the bot posts the text in the post, once per post per tag. Placeholders: `$author`, `$title`, `$download` (the `download` of the first `[variants.*]`); pings are defused. The tags must be set to "only moderators can apply" in the Discord forum's tag settings, otherwise the bot skips them (a `tag_reply_skipped` event is logged) so players cannot tag their own posts as fixed. On the feedback page, adding such a tag prefills an empty reply box with the text; sending does not post it twice. Already-answered pairs live in `.hearback/tag_replies.json`.
+
 ## 10. 机器人消息
 
 1. 在「选一个地方」里选论坛帖子或频道，或在「或粘贴 Discord 链接 / ID」里粘贴一条链接，点「查看」。

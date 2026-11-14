@@ -482,8 +482,11 @@ class BotRuntime:
                  on_missed: Callable[[list[Message], str], Any] | None = None,
                  known_dms: Callable[[], Mapping[str, str]] | None = None,
                  on_join: Callable[[str, str, bool, str], Any] | None = None,
-                 wants_members: Callable[[], bool] = lambda: False):
+                 wants_members: Callable[[], bool] = lambda: False,
+                 on_thread_tags: Callable[..., Any] | None = None):
         self._token_fn, self._on_message, self._on_state = token_fn, on_message, on_state
+        # (guild, parent forum, thread, tag ids before or None, tag ids after, forum tags {id: {name, moderated}} or None)
+        self._on_thread_tags = on_thread_tags
         self._on_missed, self._known_dms = on_missed, known_dms
         self._on_join, self._wants_members = on_join, wants_members     # (guild, user, is bot, owner); [welcome]
         self._lock = threading.Lock()
@@ -666,6 +669,34 @@ class BotRuntime:
                 await asyncio.to_thread(rt._on_message, msg, rt.status()["bot_id"])
             except Exception as e:   # one bad message must not kill the connection
                 rt._log_error(e)
+
+        async def _tags_changed(guild_id: Any, parent_id: Any, thread_id: Any, before: list[str] | None,
+                                after: list[str], forum: Any) -> None:
+            if rt._on_thread_tags is None:
+                return
+            try:
+                tags = {str(t.id): {"name": str(t.name), "moderated": bool(getattr(t, "moderated", False))}
+                        for t in (getattr(forum, "available_tags", None) or [])} or None
+                await asyncio.to_thread(rt._on_thread_tags, str(guild_id), str(parent_id), str(thread_id), before,
+                                        after, tags)
+            except Exception as e:
+                rt._log_error(e)
+
+        @client.event
+        async def on_thread_update(before: Any, after: Any) -> None:
+            # the thread was cached: both versions are known, so the old tags are too (ids, not the
+            # applied_tags property, which needs the parent forum in the cache)
+            await _tags_changed(after.guild.id, after.parent_id, after.id,
+                                [str(i) for i in before._applied_tags], [str(i) for i in after._applied_tags],
+                                after.parent)
+
+        @client.event
+        async def on_raw_thread_update(payload: Any) -> None:
+            if payload.thread is not None:       # cached: on_thread_update has it, with the old tags
+                return
+            d = payload.data or {}
+            await _tags_changed(payload.guild_id, payload.parent_id, payload.thread_id, None,
+                                [str(i) for i in d.get("applied_tags") or []], client.get_channel(int(payload.parent_id)))
 
         try:
             loop.run_until_complete(client.start(token))
