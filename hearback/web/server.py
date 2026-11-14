@@ -444,8 +444,17 @@ class App:
 
     def _thread_tags(self, ws: "Workspace", forum: str, tid: str, before_ids: list[str] | None, after_ids: list[str],
                      forum_tags: dict | None) -> None:
-        data = ws.ledger.load()
+        # the post may only be in another workspace's ledger (home pulls every forum of the server; a game's own
+        # ledger only when that workspace is opened): read it where it is
+        ledger = ws.ledger
+        data = ledger.load()
         rec = data["threads"].get(tid)
+        if rec is None:
+            for other in [self.home] + [x for x in self.spaces if x is not ws]:
+                d2 = other.ledger.load()
+                if tid in d2["threads"]:
+                    ledger, data, rec = other.ledger, d2, d2["threads"][tid]
+                    break
         if forum_tags:
             names = {str(i): str(v.get("name") or "") for i, v in forum_tags.items()}
         else:
@@ -489,7 +498,7 @@ class App:
                                                    body={"content": c, "allowed_mentions": {"parse": []}}))
                 finally:
                     if sent:
-                        ws.ledger.add_posted(tid, actions._posted_entries(sent, chunks, [], ""))
+                        ledger.add_posted(tid, actions._posted_entries(sent, chunks, [], ""))
                         self.tag_store.set_message(tid, tag, str(sent[0].get("id", "")))
                 if not sent:              # the text came out empty
                     self.tag_store.drop(tid, tag)
@@ -497,18 +506,18 @@ class App:
                 sent_any = True
                 statuses = {v: k for k, v in ws.cfg.status_tags.items()}
                 if tag in statuses and rec is not None:
-                    ws.ledger.update_triage(tid, {"status": statuses[tag]}, actor="bot:swlink")
+                    ledger.update_triage(tid, {"status": statuses[tag]}, actor="bot:swlink")
                 ws.ledger.event("bot:swlink", "tag_reply", tid, {"tag": tag, "message_id": str(sent[0].get("id", ""))})
             except Exception as e:
                 if not sent:
                     self.tag_store.drop(tid, tag)          # nothing went out: a later change may try again
                 ws.ledger.event("bot:swlink", "tag_reply_failed", tid, {"tag": tag, "error": scrub(e)[:300]})
         if rec is not None and after != list(rec.get("tags") or []):
-            with ws.ledger.locked():
-                data = ws.ledger.load()
+            with ledger.locked():
+                data = ledger.load()
                 if tid in data["threads"]:
                     data["threads"][tid]["tags"] = after
-                    ws.ledger.save(data)
+                    ledger.save(data)
 
     def on_missed(self, msgs: list[Message], bot_id: str) -> None:
         """DMs that came in while SWLink was closed (read back on connect): kept so the conversations show; an
