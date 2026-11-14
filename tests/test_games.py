@@ -213,3 +213,44 @@ def test_copy_for_agent_names_each_posts_own_game_folder(rig, tmp_path):
     rows = {r["id"]: r["name"] for r in rig.app._forum_rows(rig.e.ledger.load())}   # one inbox: each forum says its game
     assert rows[ideas] == "月契 · ideas-two" and rows[rig.e.forum].startswith("猫铃 · ")
 
+
+
+# ---------------------------------------------------------------- the server owner signs anything
+def _owner(rig):
+    rig.fake.owner_id = rig.owner["id"]
+    rig.fake.members.setdefault(rig.owner["id"], {"user": rig.owner, "roles": []})
+    return rig.owner
+
+
+def test_the_owner_names_a_game_and_gets_its_code_without_any_role(rig):
+    dana = _owner(rig)
+    rig.dm(dana, "三号 1A2B-3C4D-5E6F-7A8B")
+    rig.dm(dana, "三号 0000-1111-2222-3333")              # a second device too: no per-member limit
+    assert [c[2] for c in rig.code_calls] == ["three", "three"]
+    said = rig.said(dana)
+    assert said[1] == "CODE-three-1A2B-3C4D-5E6F-7A8B" and said[3] == "CODE-three-0000-1111-2222-3333"
+    assert "三号" in said[0] and "CODE" not in said[0]
+    mira = rig.fake.add_member("Mira", roles=[rig.r3])      # the device the owner signed is still free for a member
+    rig.dm(mira, "1A2B-3C4D-5E6F-7A8B")
+    assert rig.said(mira)[-1] == "CODE-three-1A2B-3C4D-5E6F-7A8B"
+
+
+def test_the_owner_without_a_game_name_is_asked(rig):
+    dana = _owner(rig)
+    rig.dm(dana, "1A2B-3C4D-5E6F-7A8B")
+    assert not rig.code_calls and not rig.hook_calls and "要签哪个游戏" in rig.said(dana)[-1]
+    assert "二号「月契」" in rig.said(dana)[-1] and "一号" not in rig.said(dana)[-1]   # the hook game has no owner command
+
+
+def test_the_owner_command_of_a_hook_game(rig):
+    rig.app.home.codes.s.update({"owner_command": ["issue", "{device}", "one"]})
+    dana = _owner(rig)
+    rig.dm(dana, "猫铃 1A2B-3C4D-5E6F-7A8B")
+    assert rig.code_calls[-1][2] == "one" and not rig.hook_calls and rig.said(dana)[-1] == "CODE-one-1A2B-3C4D-5E6F-7A8B"
+
+
+def test_owner_command_config(tmp_path):
+    from hearback.codes import parse_codes
+    assert parse_codes({"owner_command": ["x", "{device}"]})["owner_command"] == ["x", "{device}"]
+    with pytest.raises(HearbackError):
+        parse_codes({"owner_command": "x {device}"})

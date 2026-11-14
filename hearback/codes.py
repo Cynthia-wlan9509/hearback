@@ -10,6 +10,10 @@ Per workspace, in hearback.toml:
     command = ["node", "issue.js", "--device", "{device}", "--note", "{note}"]
     pattern = "..."             # optional regex for the device code (default: four groups of 4 hex digits with dashes)
     per_user = 1                # devices each member may get a code for; more goes to the owner
+    owner_command = [...]       # optional: what the server owner gets (default: command); works with enabled = false
+
+The server owner is not checked at all: a DM from them with a device code is signed straight away, with
+`owner_command` (or `command`). With several games in one server the message must name the game.
 
 The command runs without a shell. `{device}` is the matched code in upper case (it matched `pattern`, so it carries no
 shell or path syntax), `{note}` names who asked (`discord:<id> <name>`, commas and line breaks removed). The code is
@@ -66,7 +70,11 @@ def parse_codes(raw: Any) -> dict:
         raise HearbackError("[codes] per_user must be between 1 and 20")
     if enabled and (not role or not cmd):
         raise HearbackError("[codes] needs role_id and command when enabled")
-    return {"enabled": enabled, "role_id": role, "command": cmd, "pattern": pattern, "per_user": per_user}
+    owner_cmd = raw.get("owner_command", [])
+    if not isinstance(owner_cmd, list) or not all(isinstance(x, str) for x in owner_cmd):
+        raise HearbackError("[codes] owner_command must be a list of strings (no shell)")
+    return {"enabled": enabled, "role_id": role, "command": cmd, "pattern": pattern, "per_user": per_user,
+            "owner_command": owner_cmd}
 
 
 def mask(device: str) -> str:
@@ -101,6 +109,11 @@ class Codes:
     @property
     def enabled(self) -> bool:
         return bool(self.s.get("enabled"))
+
+    @property
+    def owner_command(self) -> list[str]:
+        """What the server owner's own requests run: owner_command, else command while enabled; [] = none."""
+        return list(self.s.get("owner_command") or (self.s.get("command") if self.enabled else None) or [])
 
     @property
     def role_id(self) -> str:
@@ -138,8 +151,8 @@ class Codes:
             return 0
 
     # ---- issuing
-    def _run(self, device: str, note: str) -> str:
-        args = [a.replace("{device}", device).replace("{note}", note) for a in self.s["command"]]
+    def _run(self, device: str, note: str, command: Sequence[str] | None = None) -> str:
+        args = [a.replace("{device}", device).replace("{note}", note) for a in (command or self.s["command"])]
         try:
             r = self.runner(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
                             timeout=TIMEOUT_S, shell=False)
@@ -185,3 +198,17 @@ class Codes:
             self.event("code_issued", {"user": uid, "device": mask(dev)})
         return (self.text("ok", device=dev, code=templates.trusted(code)), code,
                 [self.text("note_issued", who=who, device=mask(dev))])
+
+    def for_owner(self, device: str, game: str = "", name: str = "") -> tuple[str, str]:
+        """(reply, code) for the server owner: no role, per-member or one-device checks, nothing kept in the store
+        (the issuing command keeps its own record). `code` is '' when the command failed."""
+        dev = device.upper()
+        with self.lock:
+            try:
+                code = self._run(dev, clean_note("owner %s" % name), self.owner_command)
+            except CodesError as e:
+                self.event("code_failed", {"user": "owner", "device": mask(dev), "error": str(e)})
+                return self.text("owner_failed", device=dev, game=game, error=templates.safe(e, 160)), ""
+            register_secret(code)
+            self.event("code_owner", {"device": mask(dev)})
+        return self.text("owner_ok", device=dev, game=game), code

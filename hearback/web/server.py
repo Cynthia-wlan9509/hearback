@@ -792,6 +792,8 @@ class App:
         """A DM holding a device code, for a workspace with [codes] on: the member with its role gets the code from
         the owner's command. With several such workspaces, the first whose server the person is in. With several
         servers, codes from people without the role who belong elsewhere are left alone (False)."""
+        if self._owner_code(str(author_id), channel_id, content):
+            return True
         live = [ws for ws in self.spaces if ws.codes.enabled]
         hooked = [ws for ws in self.spaces if ws.hook.device_roles and ws not in live]
         if self._games(live + hooked):
@@ -825,6 +827,35 @@ class App:
             ws.supporter_bot.notify(client, notes)
         except HearbackError as e:
             (pick[0] if pick else live[0]).ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})
+        return True
+
+    def _owner_code(self, uid: str, channel_id: str, content: str) -> bool:
+        """The server owner DMs a device code: signed at once with that game's owner command, no checks. With several
+        games the message must name one; otherwise the bot asks. False when this is not the owner or no code."""
+        spaces = [ws for ws in self.spaces if ws.codes.owner_command]
+        if not spaces:
+            return False
+        dev = next((d for d in (ws.codes.find(content) for ws in spaces) if d), "")
+        if not dev or uid != self._owner_id():
+            return False
+        ws = spaces[0] if len(spaces) == 1 else games.pick(spaces, content, self._keys)
+        zh = self.home.cfg.language == "zh"
+        if ws is None:
+            labels = ("、" if zh else ", ").join(games.label(self._keys(w)) or w.cfg.guild_id for w in spaces)
+            first = (self._keys(spaces[0]) or ["?"])[0]
+            self._say(spaces[0], channel_id,
+                      "要签哪个游戏？在本机码前面写上游戏名再发一次，比如「%s %s」。能签的：%s。" % (first, dev, labels) if zh else
+                      "Which game? Send it again with the game's name in front, e.g. \"%s %s\". Games: %s." % (first, dev, labels))
+            return True
+        game = games.label(self._keys(ws)) or ws.cfg.guild_id
+        try:
+            client = self._client_factory()
+            reply, code = ws.codes.for_owner(dev, game=game)
+            ws.supporter_bot.say(client, channel_id, reply)
+            if code:
+                ws.supporter_bot.say(client, channel_id, code)
+        except HearbackError as e:
+            ws.ledger.event("bot:swlink", "code_error", None, {"error": scrub(e)[:300]})
         return True
 
     def _code_roles(self, ws: "Workspace") -> set[str]:
