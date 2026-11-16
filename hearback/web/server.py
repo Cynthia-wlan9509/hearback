@@ -850,7 +850,7 @@ class App:
         game = games.label(self._keys(ws)) or ws.cfg.guild_id
         try:
             client = self._client_factory()
-            reply, code = ws.codes.for_owner(dev, game=game)
+            reply, code = ws.codes.for_owner(dev, game=game, text=content)
             ws.supporter_bot.say(client, channel_id, reply)
             if code:
                 ws.supporter_bot.say(client, channel_id, code)

@@ -151,7 +151,7 @@ EN: dict[str, str] = {
     "codes_note_taken": "[SWLink] $who sent device $device, which already has a code for someone else. Nothing was sent.",
     "codes_note_limit": "[SWLink] $who already has a code and sent another device $device (new phone?). Nothing was sent.",
     "codes_note_failed": "[SWLink] Making a code for $who (device $device) failed: $error",
-    "codes_owner_ok": "Signed $game for device $device. The code is the next message, on its own.",
+    "codes_owner_ok": "Signed $game for device $device$detail. The code is the next message, on its own.",
     "codes_owner_failed": "Signing $game for device $device failed: $error",
 }
 
@@ -252,7 +252,7 @@ ZH: dict[str, str] = {
     "codes_note_taken": "[SWLink] $who 发来的本机码 $device 已经发给别人了，这次没有发。",
     "codes_note_limit": "[SWLink] $who 已经领过码，又发来新的本机码 $device（换手机？），没有自动发。",
     "codes_note_failed": "[SWLink] 给 $who 生成授权码失败（本机码 $device）：$error",
-    "codes_owner_ok": "已签好 $game（本机码 $device），授权码在下一条消息里，单独一条。",
+    "codes_owner_ok": "已签好 $game（本机码 $device）$detail，授权码在下一条消息里，单独一条。",
     "codes_owner_failed": "$game 签码失败（本机码 $device）：$error",
 }
 

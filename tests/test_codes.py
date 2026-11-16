@@ -115,6 +115,17 @@ def test_command_failure_tells_the_owner(tmp_path):
         assert c.handle(member(), DEV_A)[1] == ""
 
 
+def test_owner_text_reaches_the_command_and_the_summary_comes_back(tmp_path):
+    r = Runner(out="tier 99 + avatar\nMZ1.OWNER\n")
+    c, _ = make(tmp_path, r, owner_command=["issue", "--device", "{device}", "--text", "{text}"])
+    reply, code = c.for_owner(DEV_A, game="Game", text="game 99, +avatar\n%s" % DEV_A.lower())
+    assert code == "MZ1.OWNER" and "tier 99 + avatar" in reply and "MZ1.OWNER" not in reply
+    assert r.calls[-1] == ["issue", "--device", DEV_A, "--text", "game 99 +avatar"]
+    r.out = "MZ1.ONLY\n"                                             # nothing printed before the code: no summary
+    reply, code = c.for_owner(DEV_A, game="Game", text=DEV_A)
+    assert code == "MZ1.ONLY" and "()" not in reply and r.calls[-1][-1] == ""
+
+
 def test_runner_errors_and_timeouts(tmp_path):
     def slow(args, **kw):
         raise subprocess.TimeoutExpired(args, 60)

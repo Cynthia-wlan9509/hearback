@@ -16,8 +16,11 @@ The server owner is not checked at all: a DM from them with a device code is sig
 `owner_command` (or `command`). With several games in one server the message must name the game.
 
 The command runs without a shell. `{device}` is the matched code in upper case (it matched `pattern`, so it carries no
-shell or path syntax), `{note}` names who asked (`discord:<id> <name>`, commas and line breaks removed). The code is
-the last non-empty line of stdout. Codes are kept in `.hearback/codes.json` so the same device gets the same code
+shell or path syntax), `{note}` names who asked (`discord:<id> <name>`, commas and line breaks removed). In
+`owner_command` only, `{text}` is the rest of the owner's message (the device code taken out, commas and line breaks
+removed, at most 100 characters), so the owner can say what to sign, e.g. "game 99 +avatar XXXX-XXXX-XXXX-XXXX"; it
+goes in as one argument, never through a shell. The code is the last non-empty line of stdout; for the owner, the
+line printed just before it (if any) is quoted in the reply as a summary of what was signed. Codes are kept in `.hearback/codes.json` so the same device gets the same code
 again; they never go into events, logs or owner notices, and one device code is never issued to two members.
 """
 from __future__ import annotations
@@ -151,8 +154,14 @@ class Codes:
             return 0
 
     # ---- issuing
-    def _run(self, device: str, note: str, command: Sequence[str] | None = None) -> str:
-        args = [a.replace("{device}", device).replace("{note}", note) for a in (command or self.s["command"])]
+    def _run(self, device: str, note: str, command: Sequence[str] | None = None, text: str = "") -> str:
+        return self._run_full(device, note, command, text)[0]
+
+    def _run_full(self, device: str, note: str, command: Sequence[str] | None = None,
+                  text: str = "") -> tuple[str, str]:
+        """(code, the line printed just before it or '')."""
+        args = [a.replace("{device}", device).replace("{note}", note).replace("{text}", text)
+                for a in (command or self.s["command"])]
         try:
             r = self.runner(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
                             timeout=TIMEOUT_S, shell=False)
@@ -164,7 +173,7 @@ class Codes:
         code = lines[-1] if lines else ""
         if not code or len(code) > CODE_MAX or any(c.isspace() for c in code):
             raise CodesError("the command printed no usable code")
-        return code
+        return code, (scrub(lines[-2])[:160] if len(lines) > 1 else "")
 
     def handle(self, person: Any, device: str) -> tuple[str, str, list[str]]:
         """(reply, code, owner notes) for `person` asking for `device`. `code` is '' when none is given.
@@ -199,16 +208,19 @@ class Codes:
         return (self.text("ok", device=dev, code=templates.trusted(code)), code,
                 [self.text("note_issued", who=who, device=mask(dev))])
 
-    def for_owner(self, device: str, game: str = "", name: str = "") -> tuple[str, str]:
+    def for_owner(self, device: str, game: str = "", name: str = "", text: str = "") -> tuple[str, str]:
         """(reply, code) for the server owner: no role, per-member or one-device checks, nothing kept in the store
-        (the issuing command keeps its own record). `code` is '' when the command failed."""
+        (the issuing command keeps its own record). `code` is '' when the command failed. `text` is the owner's
+        message; what is left of it once the device code is taken out fills `{text}`."""
         dev = device.upper()
+        rest = " ".join(clean_note(re.sub(re.escape(dev), " ", str(text or ""), flags=re.I)).split())
         with self.lock:
             try:
-                code = self._run(dev, clean_note("owner %s" % name), self.owner_command)
+                code, detail = self._run_full(dev, clean_note("owner %s" % name), self.owner_command, rest)
             except CodesError as e:
                 self.event("code_failed", {"user": "owner", "device": mask(dev), "error": str(e)})
                 return self.text("owner_failed", device=dev, game=game, error=templates.safe(e, 160)), ""
             register_secret(code)
             self.event("code_owner", {"device": mask(dev)})
-        return self.text("owner_ok", device=dev, game=game), code
+        return self.text("owner_ok", device=dev, game=game,
+                         detail=templates.safe((" (%s)" if self.lang != "zh" else "（%s）") % detail, 180) if detail else ""), code
